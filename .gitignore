@@ -1,0 +1,18 @@
+# Build directories (meson setup build, build-android, ...).
+/build*/
+
+# Mesa checkout (see meson.build).
+/mesa
+
+# Tests are kept outside this repository.
+/tests
+
+# Crate sources meson downloads for the Rust wraps in subprojects/.
+/subprojects/*
+!/subprojects/*.wrap
+!/subprojects/packagefiles/
+
+*.o
+*.so
+*.so.*
+__pycache__/

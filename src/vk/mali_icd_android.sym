@@ -1,0 +1,11 @@
+/* Symbols the Android driver exports: the ICD entry points, and HMI, the
+ * HAL module the Android Vulkan loader looks up (mali_android.c). */
+{
+   global:
+      HMI;
+      vk_icdNegotiateLoaderICDInterfaceVersion;
+      vk_icdGetInstanceProcAddr;
+      vk_icdGetPhysicalDeviceProcAddr;
+   local:
+      *;
+};

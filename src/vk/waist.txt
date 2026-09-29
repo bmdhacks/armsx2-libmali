@@ -1,0 +1,399 @@
+# SPDX-License-Identifier: MIT
+#
+# The Vulkan waist: every entry point name in the r44p1 blob's proc-address
+# table plus the loader-only Android hooks, with its class (regenerated
+# from its waist.json, 2026-09-28). gen_waist_stubs.py turns this list into
+# the stub entry points that fill whatever the driver and Mesa's common
+# entry points leave empty.
+#
+#   a  loader-required        implement
+#   b  called by ARMSX2       implement
+#   c  out of the waist, void       stub: log and skip; abort in a
+#                                   measurement build
+#   d  out of the waist, returns a value
+#                                   stub: log, return the waist error
+#                                   (VkResult) or 0
+#
+# A stub is generated for every name here, whatever its class: an a/b
+# entry point that is not implemented yet behaves like c/d until it is.
+# "nonnull" marks the 49 out-of-waist names that must resolve because the
+# Android loader or ARMSX2 requires a non-NULL pointer; every name here
+# resolves anyway.
+#
+# "noregistry" marks a name that is not in Mesa's vk.xml, so Mesa's
+# dispatch tables have no slot for it and no stub is generated:
+# vkGetSwapchainGrallocUsage3ANDROID exists only in Android's
+# vk_android_native_buffer.h. The Android loader uses the highest-numbered
+# gralloc-usage hook a driver exposes, so implementing ...Usage2ANDROID
+# (in the registry) is enough; that is the Android WSI choice.
+# vkCmdSetLogicOp and vkCmdSetPatchControlPoints are rows of the blob's
+# table without the EXT suffix that no Vulkan version defines; nothing can
+# ask for them by a registry name, and their EXT forms are stubbed.
+#
+# Aliases (vkFooKHR next to vkFoo) share one stub with their core name.
+
+a vkAcquireImageANDROID
+a vkAllocateCommandBuffers
+a vkBindImageMemory2
+a vkBindImageMemory2KHR
+a vkCreateDevice
+a vkCreateImage
+a vkCreateInstance
+a vkDestroyDevice
+a vkDestroyImage
+a vkDestroyInstance
+a vkEnumerateDeviceExtensionProperties
+a vkEnumerateInstanceExtensionProperties
+a vkEnumerateInstanceVersion
+a vkEnumeratePhysicalDevices
+a vkGetDeviceProcAddr
+a vkGetDeviceQueue
+a vkGetInstanceProcAddr
+a vkGetPhysicalDeviceExternalFenceProperties
+a vkGetPhysicalDeviceExternalFencePropertiesKHR
+a vkGetPhysicalDeviceFeatures2
+a vkGetPhysicalDeviceFeatures2KHR
+a vkGetPhysicalDeviceImageFormatProperties2
+a vkGetPhysicalDeviceImageFormatProperties2KHR
+a vkGetPhysicalDeviceProperties
+a vkGetPhysicalDeviceProperties2
+a vkGetPhysicalDeviceProperties2KHR
+a vkGetSwapchainGrallocUsage2ANDROID
+a vkGetSwapchainGrallocUsage3ANDROID noregistry
+a vkGetSwapchainGrallocUsageANDROID
+a vkImportFenceFdKHR
+a vkQueueSignalReleaseImageANDROID
+
+b vkAllocateDescriptorSets
+b vkAllocateMemory
+b vkBeginCommandBuffer
+b vkBindBufferMemory
+b vkBindImageMemory
+b vkCmdBeginDebugUtilsLabelEXT
+b vkCmdBeginQuery
+b vkCmdBeginRenderPass
+b vkCmdBindDescriptorSets
+b vkCmdBindIndexBuffer
+b vkCmdBindPipeline
+b vkCmdBindVertexBuffers
+b vkCmdBlitImage
+b vkCmdClearAttachments
+b vkCmdClearColorImage
+b vkCmdClearDepthStencilImage
+b vkCmdCopyBuffer
+b vkCmdCopyBufferToImage
+b vkCmdCopyImage
+b vkCmdCopyImageToBuffer
+b vkCmdDispatch
+b vkCmdDraw
+b vkCmdDrawIndexed
+b vkCmdEndDebugUtilsLabelEXT
+b vkCmdEndQuery
+b vkCmdEndRenderPass
+b vkCmdInsertDebugUtilsLabelEXT
+b vkCmdPipelineBarrier
+b vkCmdPushConstants
+b vkCmdResetQueryPool
+b vkCmdSetBlendConstants
+b vkCmdSetLineWidth
+b vkCmdSetScissor
+b vkCmdSetViewport
+b vkCmdWriteTimestamp
+b vkCreateBuffer
+b vkCreateCommandPool
+b vkCreateComputePipelines
+b vkCreateDebugUtilsMessengerEXT
+b vkCreateDescriptorPool
+b vkCreateDescriptorSetLayout
+b vkCreateFence
+b vkCreateFramebuffer
+b vkCreateGraphicsPipelines
+b vkCreateImageView
+b vkCreatePipelineCache
+b vkCreatePipelineLayout
+b vkCreateQueryPool
+b vkCreateRenderPass
+b vkCreateSampler
+b vkCreateSemaphore
+b vkCreateShaderModule
+b vkDestroyBuffer
+b vkDestroyCommandPool
+b vkDestroyDebugUtilsMessengerEXT
+b vkDestroyDescriptorPool
+b vkDestroyDescriptorSetLayout
+b vkDestroyFence
+b vkDestroyFramebuffer
+b vkDestroyImageView
+b vkDestroyPipeline
+b vkDestroyPipelineCache
+b vkDestroyPipelineLayout
+b vkDestroyQueryPool
+b vkDestroyRenderPass
+b vkDestroySampler
+b vkDestroySemaphore
+b vkDestroyShaderModule
+b vkDeviceWaitIdle
+b vkEndCommandBuffer
+b vkFlushMappedMemoryRanges
+b vkFreeCommandBuffers
+b vkFreeDescriptorSets
+b vkFreeMemory
+b vkGetBufferMemoryRequirements2
+b vkGetBufferMemoryRequirements2KHR
+b vkGetDeviceFaultInfoEXT
+b vkGetFenceStatus
+b vkGetImageMemoryRequirements2
+b vkGetImageMemoryRequirements2KHR
+b vkGetPhysicalDeviceFeatures
+b vkGetPhysicalDeviceFormatProperties
+b vkGetPhysicalDeviceMemoryProperties
+b vkGetPhysicalDeviceQueueFamilyProperties
+b vkGetPipelineCacheData
+b vkGetQueryPoolResults
+b vkInvalidateMappedMemoryRanges
+b vkMapMemory
+b vkQueueSubmit
+b vkResetCommandPool
+b vkResetDescriptorPool
+b vkResetFences
+b vkSetDebugUtilsObjectNameEXT
+b vkUnmapMemory
+b vkUpdateDescriptorSets
+b vkWaitForFences
+
+c vkCmdBeginQueryIndexedEXT
+c vkCmdBeginRenderPass2
+c vkCmdBeginRenderPass2KHR
+c vkCmdBeginRendering
+c vkCmdBeginRenderingKHR
+c vkCmdBeginTransformFeedbackEXT
+c vkCmdBindTransformFeedbackBuffersEXT
+c vkCmdBindVertexBuffers2
+c vkCmdBindVertexBuffers2EXT
+c vkCmdBlitImage2
+c vkCmdBlitImage2KHR
+c vkCmdBuildAccelerationStructuresIndirectKHR
+c vkCmdBuildAccelerationStructuresKHR
+c vkCmdCopyAccelerationStructureKHR
+c vkCmdCopyAccelerationStructureToMemoryKHR
+c vkCmdCopyBuffer2
+c vkCmdCopyBuffer2KHR
+c vkCmdCopyBufferToImage2
+c vkCmdCopyBufferToImage2KHR
+c vkCmdCopyImage2
+c vkCmdCopyImage2KHR
+c vkCmdCopyImageToBuffer2
+c vkCmdCopyImageToBuffer2KHR
+c vkCmdCopyMemoryToAccelerationStructureKHR
+c vkCmdCopyQueryPoolResults nonnull
+c vkCmdDispatchBase
+c vkCmdDispatchBaseKHR
+c vkCmdDispatchIndirect nonnull
+c vkCmdDrawIndexedIndirect nonnull
+c vkCmdDrawIndexedIndirectCount
+c vkCmdDrawIndexedIndirectCountKHR
+c vkCmdDrawIndirect nonnull
+c vkCmdDrawIndirectByteCountEXT
+c vkCmdDrawIndirectCount
+c vkCmdDrawIndirectCountKHR
+c vkCmdEndQueryIndexedEXT
+c vkCmdEndRenderPass2
+c vkCmdEndRenderPass2KHR
+c vkCmdEndRendering
+c vkCmdEndRenderingKHR
+c vkCmdEndTransformFeedbackEXT
+c vkCmdExecuteCommands nonnull
+c vkCmdFillBuffer nonnull
+c vkCmdNextSubpass nonnull
+c vkCmdNextSubpass2
+c vkCmdNextSubpass2KHR
+c vkCmdPipelineBarrier2
+c vkCmdPipelineBarrier2KHR
+c vkCmdPushDescriptorSetWithTemplateKHR
+c vkCmdResetEvent nonnull
+c vkCmdResetEvent2
+c vkCmdResetEvent2KHR
+c vkCmdResolveImage nonnull
+c vkCmdResolveImage2
+c vkCmdResolveImage2KHR
+c vkCmdSetCullMode
+c vkCmdSetCullModeEXT
+c vkCmdSetDepthBias nonnull
+c vkCmdSetDepthBiasEnable
+c vkCmdSetDepthBiasEnableEXT
+c vkCmdSetDepthBounds nonnull
+c vkCmdSetDepthBoundsTestEnable
+c vkCmdSetDepthBoundsTestEnableEXT
+c vkCmdSetDepthCompareOp
+c vkCmdSetDepthCompareOpEXT
+c vkCmdSetDepthTestEnable
+c vkCmdSetDepthTestEnableEXT
+c vkCmdSetDepthWriteEnable
+c vkCmdSetDepthWriteEnableEXT
+c vkCmdSetDeviceMask
+c vkCmdSetDeviceMaskKHR
+c vkCmdSetEvent nonnull
+c vkCmdSetEvent2
+c vkCmdSetEvent2KHR
+c vkCmdSetFragmentShadingRateKHR
+c vkCmdSetFrontFace
+c vkCmdSetFrontFaceEXT
+c vkCmdSetLineStippleEXT
+c vkCmdSetLogicOp noregistry
+c vkCmdSetLogicOpEXT
+c vkCmdSetPatchControlPoints noregistry
+c vkCmdSetPatchControlPointsEXT
+c vkCmdSetPrimitiveRestartEnable
+c vkCmdSetPrimitiveRestartEnableEXT
+c vkCmdSetPrimitiveTopology
+c vkCmdSetPrimitiveTopologyEXT
+c vkCmdSetRasterizerDiscardEnable
+c vkCmdSetRasterizerDiscardEnableEXT
+c vkCmdSetRayTracingPipelineStackSizeKHR
+c vkCmdSetScissorWithCount
+c vkCmdSetScissorWithCountEXT
+c vkCmdSetStencilCompareMask nonnull
+c vkCmdSetStencilOp
+c vkCmdSetStencilOpEXT
+c vkCmdSetStencilReference nonnull
+c vkCmdSetStencilTestEnable
+c vkCmdSetStencilTestEnableEXT
+c vkCmdSetStencilWriteMask nonnull
+c vkCmdSetViewportWithCount
+c vkCmdSetViewportWithCountEXT
+c vkCmdTraceRaysIndirectKHR
+c vkCmdTraceRaysKHR
+c vkCmdUpdateBuffer nonnull
+c vkCmdWaitEvents nonnull
+c vkCmdWaitEvents2
+c vkCmdWaitEvents2KHR
+c vkCmdWriteAccelerationStructuresPropertiesKHR
+c vkCmdWriteTimestamp2
+c vkCmdWriteTimestamp2KHR
+c vkDestroyAccelerationStructureKHR
+c vkDestroyBufferView nonnull
+c vkDestroyDeferredOperationKHR
+c vkDestroyDescriptorUpdateTemplate
+c vkDestroyDescriptorUpdateTemplateKHR
+c vkDestroyEvent nonnull
+c vkDestroyPrivateDataSlot
+c vkDestroyPrivateDataSlotEXT
+c vkDestroySamplerYcbcrConversion
+c vkDestroySamplerYcbcrConversionKHR
+c vkGetAccelerationStructureBuildSizesKHR
+c vkGetBufferMemoryRequirements nonnull
+c vkGetDescriptorSetLayoutSupport
+c vkGetDescriptorSetLayoutSupportKHR
+c vkGetDeviceAccelerationStructureCompatibilityKHR
+c vkGetDeviceBufferMemoryRequirements
+c vkGetDeviceBufferMemoryRequirementsKHR
+c vkGetDeviceGroupPeerMemoryFeatures
+c vkGetDeviceGroupPeerMemoryFeaturesKHR
+c vkGetDeviceImageMemoryRequirements
+c vkGetDeviceImageMemoryRequirementsKHR
+c vkGetDeviceImageSparseMemoryRequirements
+c vkGetDeviceImageSparseMemoryRequirementsKHR
+c vkGetDeviceMemoryCommitment nonnull
+c vkGetDeviceQueue2
+c vkGetImageMemoryRequirements nonnull
+c vkGetImageSparseMemoryRequirements nonnull
+c vkGetImageSparseMemoryRequirements2
+c vkGetImageSparseMemoryRequirements2KHR
+c vkGetImageSubresourceLayout nonnull
+c vkGetImageSubresourceLayout2EXT
+c vkGetPhysicalDeviceExternalBufferProperties
+c vkGetPhysicalDeviceExternalBufferPropertiesKHR nonnull
+c vkGetPhysicalDeviceExternalSemaphoreProperties
+c vkGetPhysicalDeviceExternalSemaphorePropertiesKHR nonnull
+c vkGetPhysicalDeviceFormatProperties2
+c vkGetPhysicalDeviceFormatProperties2KHR nonnull
+c vkGetPhysicalDeviceMemoryProperties2 nonnull
+c vkGetPhysicalDeviceMemoryProperties2KHR nonnull
+c vkGetPhysicalDeviceQueueFamilyProperties2
+c vkGetPhysicalDeviceQueueFamilyProperties2KHR nonnull
+c vkGetPhysicalDeviceSparseImageFormatProperties nonnull
+c vkGetPhysicalDeviceSparseImageFormatProperties2
+c vkGetPhysicalDeviceSparseImageFormatProperties2KHR nonnull
+c vkGetPrivateData
+c vkGetPrivateDataEXT
+c vkGetRenderAreaGranularity nonnull
+c vkQueueBeginDebugUtilsLabelEXT
+c vkQueueEndDebugUtilsLabelEXT
+c vkQueueInsertDebugUtilsLabelEXT
+c vkResetQueryPool
+c vkResetQueryPoolEXT
+c vkSubmitDebugUtilsMessageEXT
+c vkTrimCommandPool
+c vkTrimCommandPoolKHR
+c vkUpdateDescriptorSetWithTemplate
+c vkUpdateDescriptorSetWithTemplateKHR
+
+d vkBindBufferMemory2 nonnull
+d vkBindBufferMemory2KHR
+d vkBuildAccelerationStructuresKHR
+d vkCopyAccelerationStructureKHR
+d vkCopyAccelerationStructureToMemoryKHR
+d vkCopyMemoryToAccelerationStructureKHR
+d vkCreateAccelerationStructureKHR
+d vkCreateBufferView nonnull
+d vkCreateDeferredOperationKHR
+d vkCreateDescriptorUpdateTemplate
+d vkCreateDescriptorUpdateTemplateKHR
+d vkCreateEvent nonnull
+d vkCreatePrivateDataSlot
+d vkCreatePrivateDataSlotEXT
+d vkCreateRayTracingPipelinesKHR
+d vkCreateRenderPass2
+d vkCreateRenderPass2KHR
+d vkCreateSamplerYcbcrConversion
+d vkCreateSamplerYcbcrConversionKHR
+d vkDeferredOperationJoinKHR
+d vkEnumerateDeviceLayerProperties nonnull
+d vkEnumerateInstanceLayerProperties nonnull
+d vkEnumeratePhysicalDeviceGroups
+d vkEnumeratePhysicalDeviceGroupsKHR nonnull
+d vkGetAccelerationStructureDeviceAddressKHR
+d vkGetAndroidHardwareBufferPropertiesANDROID nonnull
+d vkGetBufferDeviceAddress
+d vkGetBufferDeviceAddressKHR
+d vkGetBufferOpaqueCaptureAddress
+d vkGetBufferOpaqueCaptureAddressKHR
+d vkGetCalibratedTimestampsEXT
+d vkGetDeferredOperationMaxConcurrencyKHR
+d vkGetDeferredOperationResultKHR
+d vkGetDeviceMemoryOpaqueCaptureAddress
+d vkGetDeviceMemoryOpaqueCaptureAddressKHR
+d vkGetEventStatus nonnull
+d vkGetFenceFdKHR
+d vkGetImageDrmFormatModifierPropertiesEXT
+d vkGetMemoryAndroidHardwareBufferANDROID nonnull
+d vkGetMemoryFdKHR
+d vkGetMemoryFdPropertiesKHR
+d vkGetPhysicalDeviceCalibrateableTimeDomainsEXT
+d vkGetPhysicalDeviceFragmentShadingRatesKHR
+d vkGetPhysicalDeviceImageFormatProperties nonnull
+d vkGetPhysicalDeviceToolProperties
+d vkGetPhysicalDeviceToolPropertiesEXT
+d vkGetRayTracingCaptureReplayShaderGroupHandlesKHR
+d vkGetRayTracingShaderGroupHandlesKHR
+d vkGetRayTracingShaderGroupStackSizeKHR
+d vkGetSemaphoreCounterValue
+d vkGetSemaphoreCounterValueKHR
+d vkGetSemaphoreFdKHR
+d vkImportSemaphoreFdKHR
+d vkMergePipelineCaches nonnull
+d vkQueueBindSparse nonnull
+d vkQueueSubmit2
+d vkQueueSubmit2KHR
+d vkQueueWaitIdle nonnull
+d vkResetCommandBuffer nonnull
+d vkResetEvent nonnull
+d vkSetDebugUtilsObjectTagEXT
+d vkSetEvent nonnull
+d vkSetPrivateData
+d vkSetPrivateDataEXT
+d vkSignalSemaphore
+d vkSignalSemaphoreKHR
+d vkWaitSemaphores
+d vkWaitSemaphoresKHR
+d vkWriteAccelerationStructuresPropertiesKHR

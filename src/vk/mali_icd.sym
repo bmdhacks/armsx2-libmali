@@ -1,0 +1,9 @@
+/* Symbols the driver exports; everything else is local. */
+{
+   global:
+      vk_icdNegotiateLoaderICDInterfaceVersion;
+      vk_icdGetInstanceProcAddr;
+      vk_icdGetPhysicalDeviceProcAddr;
+   local:
+      *;
+};

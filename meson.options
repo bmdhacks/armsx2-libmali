@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MIT
+
+option(
+  'measurement',
+  type : 'boolean',
+  value : false,
+  description : 'Measurement build: a call to an unimplemented entry point ' +
+                'that returns void aborts the process instead of being ' +
+                'logged and skipped.',
+)

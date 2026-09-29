@@ -1,0 +1,150 @@
+/*
+ * Copyright 2026 The libmali authors
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * Samplers, buffer views, descriptor pools and descriptor sets.
+ *
+ * A set is a run of 32-byte hardware descriptors in GPU memory, laid out
+ * by its set layout (mali_descriptor_set_layout.h, panvk's layout). Every
+ * descriptor is packed once, when the object it describes is created
+ * (sampler, image view, buffer view); vkUpdateDescriptorSets only copies
+ * those 32 bytes into the set, except for uniform and storage buffers,
+ * whose Buffer descriptor is packed at the write. Dynamic buffers have no
+ * slot: their address and range stay in the set's host memory and the
+ * command buffer writes them, with the dynamic offset applied, into the
+ * driver's resource table (table 0) at draw or dispatch time.
+ *
+ * Set memory is CPU-uncached and GPU read-only (the blob's descriptor pool
+ * without dynamic bindings), so a CPU write needs no cache maintenance and
+ * the GPU reads a set in place.
+ */
+
+#ifndef MALI_DESCRIPTOR_SET_H
+#define MALI_DESCRIPTOR_SET_H
+
+#include <stdint.h>
+
+#include "util/bitset.h"
+#include "util/vma.h"
+#include "vk_buffer_view.h"
+#include "vk_object.h"
+#include "vk_sampler.h"
+
+#include "kbase/kbase.h"
+
+#include "mali_descriptor_set_layout.h"
+
+struct mali_device;
+
+struct mali_sampler {
+   struct vk_sampler vk;
+   struct mali_hw_desc desc;    /* Sampler */
+};
+
+VK_DEFINE_NONDISP_HANDLE_CASTS(mali_sampler, vk.base, VkSampler,
+                               VK_OBJECT_TYPE_SAMPLER)
+
+struct mali_buffer_view {
+   struct vk_buffer_view vk;
+   struct mali_hw_desc desc;    /* Buffer, type Structure */
+};
+
+VK_DEFINE_NONDISP_HANDLE_CASTS(mali_buffer_view, vk.base, VkBufferView,
+                               VK_OBJECT_TYPE_BUFFER_VIEW)
+
+struct mali_descriptor_pool;
+
+struct mali_descriptor_set {
+   struct vk_object_base base;
+   struct mali_descriptor_pool *pool;
+   /* The pool holds a reference to it (mali_descriptor_pool.held), or the
+    * set does when own_layout_ref is set. */
+   const struct mali_descriptor_set_layout *layout;
+   bool own_layout_ref;
+
+   /* The set's slots: layout->desc_count descriptors. Both 0/NULL for a
+    * layout without slots (dynamic buffers only, or empty). */
+   uint64_t gpu;
+   void *cpu;
+
+   /* Dynamic uniform/storage buffers, by the index the layout gives them
+    * (binding desc_idx + array element). */
+   struct {
+      uint64_t addr;
+      uint64_t range;
+   } dyn_bufs[MALI_MAX_DYNAMIC_BUFFERS];
+};
+
+VK_DEFINE_NONDISP_HANDLE_CASTS(mali_descriptor_set, base, VkDescriptorSet,
+                               VK_OBJECT_TYPE_DESCRIPTOR_SET)
+
+struct mali_descriptor_pool {
+   struct vk_object_base base;
+
+   /* All set memory: one kbase allocation, sub-allocated by a heap. No
+    * allocation (gpu_va 0) when the pool holds only dynamic buffers. */
+   struct mali_kbase_bo bo;
+   struct util_vma_heap heap;
+   uint64_t heap_size;
+
+   /* Descriptors of each type still available (mali_desc_type_index). */
+   uint32_t avail[MALI_DESC_TYPE_COUNT];
+   uint32_t size[MALI_DESC_TYPE_COUNT];
+
+   /* Layouts the pool holds a reference to until it is destroyed, so that
+    * allocating and freeing sets of them costs no reference count atomics
+    * (ARMSX2 allocates sets per draw from a few layouts). */
+   struct mali_descriptor_set_layout *held[8];
+   uint32_t held_count;
+
+   uint32_t max_sets;
+   uint32_t live_sets;
+   BITSET_WORD *free_sets;      /* bit i: sets[i] is free */
+   struct mali_descriptor_set *sets;
+};
+
+VK_DEFINE_NONDISP_HANDLE_CASTS(mali_descriptor_pool, base, VkDescriptorPool,
+                               VK_OBJECT_TYPE_DESCRIPTOR_POOL)
+
+/* Bytes of GPU memory a set of this layout occupies. */
+static inline uint64_t
+mali_descriptor_set_size(const struct mali_descriptor_set *set)
+{
+   return (uint64_t)set->layout->desc_count * MALI_DESCRIPTOR_SIZE;
+}
+
+/* ---------------------------------------------------------------------- */
+/* For the command buffer: what a bound set contributes to the shader
+ * resource tables of a draw or dispatch. None of these touch the command
+ * stream; they pack descriptors into memory the caller provides.        */
+
+/* Size of one Resource entry of a resource table. */
+#define MALI_RESOURCE_SIZE 16
+
+/*
+ * The Resource entry for a bound set (resource table set + 1): the set's
+ * memory, Contains descriptors set, size in bytes. set may be NULL (an
+ * unbound or unused set number): an empty entry. out: 16 bytes, 16-byte
+ * aligned in a 64-byte aligned table.
+ */
+void mali_descriptor_set_pack_resource(const struct mali_descriptor_set *set,
+                                       void *out);
+
+/*
+ * The Buffer descriptor for dynamic buffer idx of set with its dynamic
+ * offset applied, for the driver table (table 0) slot the shader's
+ * mali_shader_desc_info::dyn_bufs map names. Sizes are rounded up to 16
+ * bytes for uniform buffers and 4 for storage buffers (panvk). out: 32
+ * bytes.
+ */
+void mali_descriptor_set_pack_dyn_buf(const struct mali_descriptor_set *set,
+                                      uint32_t idx, uint32_t dynamic_offset,
+                                      void *out);
+
+/* The driver table's dummy sampler (texel fetches still name a sampler on
+ * Valhall). out: 32 bytes. */
+void mali_pack_dummy_sampler(void *out);
+
+#endif
