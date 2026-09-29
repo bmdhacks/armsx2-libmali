@@ -1,5 +1,5 @@
 /*
- * Copyright 2026 The libmali authors
+ * SPDX-FileCopyrightText: 2026 ARMSX2 and bmdhacks
  * SPDX-License-Identifier: MIT
  */
 
@@ -57,7 +57,7 @@ __attribute__((visibility("default"))) struct hwvulkan_module_t HAL_MODULE_INFO_
       .hal_api_version = HARDWARE_MAKE_API_VERSION(1, 0),
       .id = HWVULKAN_HARDWARE_MODULE_ID,
       .name = "libmali Vulkan driver (kbase)",
-      .author = "The libmali authors",
+      .author = "ARMSX2 and bmdhacks",
       .methods = &mali_hal_methods,
    },
 };

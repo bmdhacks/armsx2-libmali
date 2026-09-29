@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2026 The libmali authors
+# SPDX-FileCopyrightText: 2026 ARMSX2 and bmdhacks
 # SPDX-License-Identifier: MIT
 """List the NIR instructions kraid's NIR translator handles.
 
