@@ -65,6 +65,13 @@ idep_mali_kbase = declare_dependency(
 # The Vulkan front half: our entry points
 # (prefix mali_) and the waist stubs (prefix mali_waist_), both tabled by
 # Mesa's generator; the stubs themselves come from waist.txt.
+# Device-level commands (vkCmd*, vkQueue*, vkCreate{Sampler,ImageView,
+# BufferView,*Pipelines}, vkUpdateDescriptorSets, ...) get a dispatch table
+# per GPU architecture, --device-prefix mali_v9/mali_v11, so both arches'
+# MALI_PER_ARCH-named functions can sit in the same .so without colliding;
+# mali_CreateDevice picks the table that matches the device (mali_device.c).
+# Instance- and physical-device-level commands keep one shared table under
+# --prefix, because an arch is not known until a physical device is probed.
 mali_entrypoints = custom_target(
   'mali_entrypoints',
   input : [vk_entrypoints_gen, vk_api_xml],
@@ -73,6 +80,7 @@ mali_entrypoints = custom_target(
     prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--proto', '--weak',
     '--out-h', '@OUTPUT0@', '--out-c', '@OUTPUT1@',
     '--prefix', 'mali', '--prefix', 'mali_waist',
+    '--device-prefix', 'mali_v9', '--device-prefix', 'mali_v11',
     '--beta', with_vulkan_beta.to_string(),
   ],
   depend_files : vk_entrypoints_gen_depend_files,

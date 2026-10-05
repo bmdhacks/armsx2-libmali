@@ -35,6 +35,7 @@
 #include "util/bitscan.h"
 #include "util/u_math.h"
 
+#include "mali_arch.h"
 #include "mali_descriptor_set.h"
 #include "mali_queue.h"
 #include "mali_vk.h"
@@ -435,10 +436,10 @@ mali_cmd_dispatch_meta(struct mali_cmd_buffer *cmd, const struct mali_shader *cs
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdDispatchBase(VkCommandBuffer commandBuffer, uint32_t baseGroupX,
-                     uint32_t baseGroupY, uint32_t baseGroupZ,
-                     uint32_t groupCountX, uint32_t groupCountY,
-                     uint32_t groupCountZ)
+MALI_PER_ARCH(CmdDispatchBase)(VkCommandBuffer commandBuffer, uint32_t baseGroupX,
+                               uint32_t baseGroupY, uint32_t baseGroupZ,
+                               uint32_t groupCountX, uint32_t groupCountY,
+                               uint32_t groupCountZ)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    const uint32_t base[3] = {baseGroupX, baseGroupY, baseGroupZ};

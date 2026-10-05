@@ -228,7 +228,8 @@ void mali_device_keys_finish(struct mali_device *dev);
 
 /*
  * The pipeline ops' bind (the runtime's vkCmdBindPipeline would call it;
- * mali_CmdBindPipeline replaces that): mali_cmd_bind_pipeline.
+ * the per-arch CmdBindPipeline entry point replaces that):
+ * mali_cmd_bind_pipeline.
  */
 void mali_pipeline_cmd_bind(struct vk_command_buffer *cmd, struct vk_pipeline *pipeline);
 

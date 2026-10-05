@@ -28,9 +28,17 @@ project(
   ],
 )
 
-# The GPU architecture we build for (Mesa numbering). The G615 in the
-# RG 477V reports arch 11.
+# The GPU architecture we build the driver's device entry points for
+# (Mesa numbering). The G615 in the RG 477V reports arch 11; this is the
+# only arch the vk/ sources in libmali_vk are compiled for today.
 pan_arch = 11
+
+# Every arch we generate genxml packers and a pixel-format library for.
+# arch 9 (G57/G77, job manager) has no driver code yet (no vk/ source
+# builds against it); this only proves the genxml side builds for it, so
+# the arch's eventual driver files have packers and pan_format ready to
+# link against.
+pan_archs = [9, pan_arch]
 
 cc = meson.get_compiler('c')
 cpp = meson.get_compiler('cpp')

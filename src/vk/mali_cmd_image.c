@@ -45,6 +45,7 @@
 #include "vk_image.h"
 #include "vk_log.h"
 
+#include "mali_arch.h"
 #include "mali_image.h"
 #include "mali_queue.h"
 #include "mali_vk.h"
@@ -362,7 +363,7 @@ copy_touches_crc(const struct mali_image *img, const VkImageSubresourceLayers *s
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdCopyImage2(VkCommandBuffer commandBuffer, const VkCopyImageInfo2 *info)
+MALI_PER_ARCH(CmdCopyImage2)(VkCommandBuffer commandBuffer, const VkCopyImageInfo2 *info)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(mali_image, src, info->srcImage);
@@ -423,7 +424,7 @@ mali_CmdCopyImage2(VkCommandBuffer commandBuffer, const VkCopyImageInfo2 *info)
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer, const VkCopyBufferToImageInfo2 *info)
+MALI_PER_ARCH(CmdCopyBufferToImage2)(VkCommandBuffer commandBuffer, const VkCopyBufferToImageInfo2 *info)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(vk_buffer, buf, info->srcBuffer);
@@ -459,7 +460,7 @@ mali_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer, const VkCopyBufferToIm
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer, const VkCopyImageToBufferInfo2 *info)
+MALI_PER_ARCH(CmdCopyImageToBuffer2)(VkCommandBuffer commandBuffer, const VkCopyImageToBufferInfo2 *info)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(mali_image, img, info->srcImage);
@@ -509,9 +510,9 @@ clear_pass(struct mali_cmd_buffer *cmd, struct mali_render_desc *d, const struct
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdClearColorImage(VkCommandBuffer commandBuffer, VkImage image,
-                        VkImageLayout imageLayout, const VkClearColorValue *pColor,
-                        uint32_t rangeCount, const VkImageSubresourceRange *pRanges)
+MALI_PER_ARCH(CmdClearColorImage)(VkCommandBuffer commandBuffer, VkImage image,
+                                  VkImageLayout imageLayout, const VkClearColorValue *pColor,
+                                  uint32_t rangeCount, const VkImageSubresourceRange *pRanges)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(mali_image, img, image);
@@ -544,10 +545,10 @@ mali_CmdClearColorImage(VkCommandBuffer commandBuffer, VkImage image,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdClearDepthStencilImage(VkCommandBuffer commandBuffer, VkImage image,
-                               VkImageLayout imageLayout,
-                               const VkClearDepthStencilValue *pDepthStencil,
-                               uint32_t rangeCount, const VkImageSubresourceRange *pRanges)
+MALI_PER_ARCH(CmdClearDepthStencilImage)(VkCommandBuffer commandBuffer, VkImage image,
+                                         VkImageLayout imageLayout,
+                                         const VkClearDepthStencilValue *pDepthStencil,
+                                         uint32_t rangeCount, const VkImageSubresourceRange *pRanges)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(mali_image, img, image);
@@ -612,7 +613,7 @@ blit_axis(int32_t s0, int32_t s1, int32_t d0, int32_t d1, uint32_t size, float *
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdBlitImage2(VkCommandBuffer commandBuffer, const VkBlitImageInfo2 *info)
+MALI_PER_ARCH(CmdBlitImage2)(VkCommandBuffer commandBuffer, const VkBlitImageInfo2 *info)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(mali_image, src, info->srcImage);

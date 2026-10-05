@@ -39,6 +39,7 @@
 
 #include "pan_format.h"
 
+#include "mali_arch.h"
 #include "mali_descriptor_set.h"
 #include "mali_image.h"
 #include "mali_pipeline.h"
@@ -154,10 +155,10 @@ mali_cmd_bind_graphics(struct mali_cmd_buffer *cmd, struct mali_graphics_pipelin
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdBindVertexBuffers2(VkCommandBuffer commandBuffer, uint32_t firstBinding,
-                           uint32_t bindingCount, const VkBuffer *pBuffers,
-                           const VkDeviceSize *pOffsets, const VkDeviceSize *pSizes,
-                           const VkDeviceSize *pStrides)
+MALI_PER_ARCH(CmdBindVertexBuffers2)(VkCommandBuffer commandBuffer, uint32_t firstBinding,
+                                     uint32_t bindingCount, const VkBuffer *pBuffers,
+                                     const VkDeviceSize *pOffsets, const VkDeviceSize *pSizes,
+                                     const VkDeviceSize *pStrides)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    struct mali_gfx_draw_state *d = &cmd->gfx.draw;
@@ -180,8 +181,8 @@ mali_CmdBindVertexBuffers2(VkCommandBuffer commandBuffer, uint32_t firstBinding,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdBindIndexBuffer2KHR(VkCommandBuffer commandBuffer, VkBuffer buffer,
-                            VkDeviceSize offset, VkDeviceSize size, VkIndexType indexType)
+MALI_PER_ARCH(CmdBindIndexBuffer2KHR)(VkCommandBuffer commandBuffer, VkBuffer buffer,
+                                      VkDeviceSize offset, VkDeviceSize size, VkIndexType indexType)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(vk_buffer, buf, buffer);
@@ -1273,8 +1274,8 @@ draw(struct mali_cmd_buffer *cmd, const struct draw_info *di)
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t instanceCount,
-             uint32_t firstVertex, uint32_t firstInstance)
+MALI_PER_ARCH(CmdDraw)(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t instanceCount,
+                       uint32_t firstVertex, uint32_t firstInstance)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    const struct draw_info di = {
@@ -1287,9 +1288,9 @@ mali_CmdDraw(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t insta
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdDrawIndexed(VkCommandBuffer commandBuffer, uint32_t indexCount,
-                    uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset,
-                    uint32_t firstInstance)
+MALI_PER_ARCH(CmdDrawIndexed)(VkCommandBuffer commandBuffer, uint32_t indexCount,
+                              uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset,
+                              uint32_t firstInstance)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    const struct draw_info di = {
@@ -1414,9 +1415,9 @@ fs_type(enum pipe_format f)
  * emit), so no depth-bias trick is needed.
  */
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdClearAttachments(VkCommandBuffer commandBuffer, uint32_t attachmentCount,
-                         const VkClearAttachment *pAttachments, uint32_t rectCount,
-                         const VkClearRect *pRects)
+MALI_PER_ARCH(CmdClearAttachments)(VkCommandBuffer commandBuffer, uint32_t attachmentCount,
+                                   const VkClearAttachment *pAttachments, uint32_t rectCount,
+                                   const VkClearRect *pRects)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    struct mali_render_state *r = &cmd->gfx.render;

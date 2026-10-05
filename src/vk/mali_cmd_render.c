@@ -56,6 +56,7 @@
 #include "model/pan_model.h"
 #include "pan_format.h"
 
+#include "mali_arch.h"
 #include "mali_image.h"
 #include "mali_queue.h"
 #include "mali_vk.h"
@@ -1363,7 +1364,7 @@ set_target(struct mali_fb_target *t, const struct mali_image_view *view, unsigne
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdBeginRendering(VkCommandBuffer commandBuffer, const VkRenderingInfo *info)
+MALI_PER_ARCH(CmdBeginRendering)(VkCommandBuffer commandBuffer, const VkRenderingInfo *info)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    struct mali_render_desc d = {
@@ -1439,7 +1440,7 @@ mali_CmdBeginRendering(VkCommandBuffer commandBuffer, const VkRenderingInfo *inf
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdEndRendering(VkCommandBuffer commandBuffer)
+MALI_PER_ARCH(CmdEndRendering)(VkCommandBuffer commandBuffer)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    mali_cmd_render_end(cmd);

@@ -15,6 +15,7 @@
 #define PAN_ARCH MALI_PAN_ARCH
 
 #include "mali_vk.h"
+#include "mali_arch.h"
 #include "mali_descriptor_set.h"
 #include "mali_image.h"
 #include "mali_memory.h"
@@ -56,8 +57,8 @@ static_assert(pan_size(RESOURCE) == MALI_RESOURCE_SIZE, "descriptor size");
  * code, not the hardware, so it comes from Mesa's format table like the
  * compiler's expectations. */
 VKAPI_ATTR VkResult VKAPI_CALL
-mali_CreateBufferView(VkDevice _device, const VkBufferViewCreateInfo *pCreateInfo,
-                      const VkAllocationCallbacks *pAllocator, VkBufferView *pView)
+MALI_PER_ARCH(CreateBufferView)(VkDevice _device, const VkBufferViewCreateInfo *pCreateInfo,
+                                const VkAllocationCallbacks *pAllocator, VkBufferView *pView)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
    VK_FROM_HANDLE(mali_buffer, buffer, pCreateInfo->buffer);
@@ -88,8 +89,8 @@ mali_CreateBufferView(VkDevice _device, const VkBufferViewCreateInfo *pCreateInf
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_DestroyBufferView(VkDevice _device, VkBufferView _view,
-                       const VkAllocationCallbacks *pAllocator)
+MALI_PER_ARCH(DestroyBufferView)(VkDevice _device, VkBufferView _view,
+                                 const VkAllocationCallbacks *pAllocator)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
    VK_FROM_HANDLE(mali_buffer_view, view, _view);
@@ -343,10 +344,10 @@ copy_descriptors(const VkCopyDescriptorSet *c)
  * maintenance, and reads the set in place when a command buffer that bound
  * it executes (so updates after the bind are seen, as with the blob). */
 VKAPI_ATTR void VKAPI_CALL
-mali_UpdateDescriptorSets(VkDevice _device, uint32_t descriptorWriteCount,
-                          const VkWriteDescriptorSet *pDescriptorWrites,
-                          uint32_t descriptorCopyCount,
-                          const VkCopyDescriptorSet *pDescriptorCopies)
+MALI_PER_ARCH(UpdateDescriptorSets)(VkDevice _device, uint32_t descriptorWriteCount,
+                                    const VkWriteDescriptorSet *pDescriptorWrites,
+                                    uint32_t descriptorCopyCount,
+                                    const VkCopyDescriptorSet *pDescriptorCopies)
 {
    for (uint32_t i = 0; i < descriptorWriteCount; i++) {
       VK_FROM_HANDLE(mali_descriptor_set, set, pDescriptorWrites[i].dstSet);
@@ -422,9 +423,9 @@ pool_destroy(struct mali_device *dev, const VkAllocationCallbacks *alloc,
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-mali_CreateDescriptorPool(VkDevice _device, const VkDescriptorPoolCreateInfo *pCreateInfo,
-                          const VkAllocationCallbacks *pAllocator,
-                          VkDescriptorPool *pDescriptorPool)
+MALI_PER_ARCH(CreateDescriptorPool)(VkDevice _device, const VkDescriptorPoolCreateInfo *pCreateInfo,
+                                    const VkAllocationCallbacks *pAllocator,
+                                    VkDescriptorPool *pDescriptorPool)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
    const uint32_t max_sets = pCreateInfo->maxSets;
@@ -494,8 +495,8 @@ mali_CreateDescriptorPool(VkDevice _device, const VkDescriptorPoolCreateInfo *pC
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_DestroyDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
-                           const VkAllocationCallbacks *pAllocator)
+MALI_PER_ARCH(DestroyDescriptorPool)(VkDevice _device, VkDescriptorPool _pool,
+                                     const VkAllocationCallbacks *pAllocator)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
    VK_FROM_HANDLE(mali_descriptor_pool, pool, _pool);
@@ -505,8 +506,8 @@ mali_DestroyDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-mali_ResetDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
-                         VkDescriptorPoolResetFlags flags)
+MALI_PER_ARCH(ResetDescriptorPool)(VkDevice _device, VkDescriptorPool _pool,
+                                   VkDescriptorPoolResetFlags flags)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
    VK_FROM_HANDLE(mali_descriptor_pool, pool, _pool);
@@ -595,8 +596,8 @@ pool_alloc_set(struct mali_device *dev, struct mali_descriptor_pool *pool,
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-mali_AllocateDescriptorSets(VkDevice _device, const VkDescriptorSetAllocateInfo *pAllocateInfo,
-                            VkDescriptorSet *pDescriptorSets)
+MALI_PER_ARCH(AllocateDescriptorSets)(VkDevice _device, const VkDescriptorSetAllocateInfo *pAllocateInfo,
+                                      VkDescriptorSet *pDescriptorSets)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
    VK_FROM_HANDLE(mali_descriptor_pool, pool, pAllocateInfo->descriptorPool);
@@ -626,8 +627,8 @@ mali_AllocateDescriptorSets(VkDevice _device, const VkDescriptorSetAllocateInfo 
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-mali_FreeDescriptorSets(VkDevice _device, VkDescriptorPool _pool, uint32_t count,
-                        const VkDescriptorSet *pDescriptorSets)
+MALI_PER_ARCH(FreeDescriptorSets)(VkDevice _device, VkDescriptorPool _pool, uint32_t count,
+                                  const VkDescriptorSet *pDescriptorSets)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
    VK_FROM_HANDLE(mali_descriptor_pool, pool, _pool);

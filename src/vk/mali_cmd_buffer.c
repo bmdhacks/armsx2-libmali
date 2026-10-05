@@ -28,6 +28,7 @@
 #include "vk_synchronization.h"
 #include "vk_util.h"
 
+#include "mali_arch.h"
 #include "mali_descriptor_set.h"
 #include "mali_image.h"
 #include "mali_measure.h"
@@ -320,8 +321,8 @@ const struct vk_command_buffer_ops mali_cmd_buffer_ops = {
 };
 
 VKAPI_ATTR VkResult VKAPI_CALL
-mali_BeginCommandBuffer(VkCommandBuffer commandBuffer,
-                        const VkCommandBufferBeginInfo *pBeginInfo)
+MALI_PER_ARCH(BeginCommandBuffer)(VkCommandBuffer commandBuffer,
+                                  const VkCommandBufferBeginInfo *pBeginInfo)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
 
@@ -380,7 +381,7 @@ finish_stream(struct mali_cmd_buffer *cmd, unsigned sq)
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-mali_EndCommandBuffer(VkCommandBuffer commandBuffer)
+MALI_PER_ARCH(EndCommandBuffer)(VkCommandBuffer commandBuffer)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
 
@@ -963,8 +964,8 @@ mali_cmd_emit_barrier(struct mali_cmd_buffer *cmd, const struct mali_cs_deps *in
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
-                         const VkDependencyInfo *pDependencyInfo)
+MALI_PER_ARCH(CmdPipelineBarrier2)(VkCommandBuffer commandBuffer,
+                                   const VkDependencyInfo *pDependencyInfo)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    struct mali_cs_deps deps = {0};
@@ -1008,8 +1009,8 @@ mali_cmd_bind_pipeline(struct mali_cmd_buffer *cmd, struct vk_pipeline *pipeline
 /* Replaces the runtime's vkCmdBindPipeline, which only calls through the
  * pipeline's ops to the same place. */
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdBindPipeline(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint,
-                     VkPipeline _pipeline)
+MALI_PER_ARCH(CmdBindPipeline)(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint,
+                               VkPipeline _pipeline)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(vk_pipeline, pipeline, _pipeline);
@@ -1018,8 +1019,8 @@ mali_CmdBindPipeline(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipeline
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdBindDescriptorSets2KHR(VkCommandBuffer commandBuffer,
-                               const VkBindDescriptorSetsInfoKHR *info)
+MALI_PER_ARCH(CmdBindDescriptorSets2KHR)(VkCommandBuffer commandBuffer,
+                                         const VkBindDescriptorSetsInfoKHR *info)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(vk_pipeline_layout, layout, info->layout);
@@ -1063,10 +1064,10 @@ mali_CmdBindDescriptorSets2KHR(VkCommandBuffer commandBuffer,
 /* The Vulkan 1.0 entry point, straight to the one above (the runtime's
  * version goes through the dispatch table). */
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint,
-                           VkPipelineLayout layout, uint32_t firstSet,
-                           uint32_t descriptorSetCount, const VkDescriptorSet *pDescriptorSets,
-                           uint32_t dynamicOffsetCount, const uint32_t *pDynamicOffsets)
+MALI_PER_ARCH(CmdBindDescriptorSets)(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint,
+                                     VkPipelineLayout layout, uint32_t firstSet,
+                                     uint32_t descriptorSetCount, const VkDescriptorSet *pDescriptorSets,
+                                     uint32_t dynamicOffsetCount, const uint32_t *pDynamicOffsets)
 {
    const VkBindDescriptorSetsInfoKHR info = {
       .sType = VK_STRUCTURE_TYPE_BIND_DESCRIPTOR_SETS_INFO_KHR,
@@ -1078,12 +1079,12 @@ mali_CmdBindDescriptorSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint pi
       .dynamicOffsetCount = dynamicOffsetCount,
       .pDynamicOffsets = pDynamicOffsets,
    };
-   mali_CmdBindDescriptorSets2KHR(commandBuffer, &info);
+   MALI_PER_ARCH(CmdBindDescriptorSets2KHR)(commandBuffer, &info);
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdPushConstants2KHR(VkCommandBuffer commandBuffer,
-                          const VkPushConstantsInfoKHR *info)
+MALI_PER_ARCH(CmdPushConstants2KHR)(VkCommandBuffer commandBuffer,
+                                    const VkPushConstantsInfoKHR *info)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    assert(info->offset + info->size <= sizeof(cmd->push_constants));

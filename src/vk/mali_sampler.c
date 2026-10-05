@@ -15,6 +15,7 @@
 #define PAN_ARCH MALI_PAN_ARCH
 
 #include "mali_vk.h"
+#include "mali_arch.h"
 #include "mali_descriptor_set.h"
 
 #include "genxml/gen_macros.h"
@@ -127,8 +128,8 @@ pack_sampler(const struct mali_sampler *sampler, const VkSamplerCreateInfo *info
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-mali_CreateSampler(VkDevice _device, const VkSamplerCreateInfo *pCreateInfo,
-                   const VkAllocationCallbacks *pAllocator, VkSampler *pSampler)
+MALI_PER_ARCH(CreateSampler)(VkDevice _device, const VkSamplerCreateInfo *pCreateInfo,
+                             const VkAllocationCallbacks *pAllocator, VkSampler *pSampler)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
 
@@ -150,8 +151,8 @@ mali_CreateSampler(VkDevice _device, const VkSamplerCreateInfo *pCreateInfo,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_DestroySampler(VkDevice _device, VkSampler _sampler,
-                    const VkAllocationCallbacks *pAllocator)
+MALI_PER_ARCH(DestroySampler)(VkDevice _device, VkSampler _sampler,
+                              const VkAllocationCallbacks *pAllocator)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
    VK_FROM_HANDLE(mali_sampler, sampler, _sampler);

@@ -58,6 +58,11 @@ struct mali_physical_device {
    struct mali_kbase_gpu_props props;  /* decoded GET_GPUPROPS */
    uint32_t cs_work_registers;
 
+   /* props.arch_major, cached here so code outside the kbase layer picks
+    * the per-arch device entry points (mali_CreateDevice) and internals
+    * (mali_arch_dispatch) without reaching back into props. */
+   uint32_t arch;
+
    VkPhysicalDeviceMemoryProperties memory;
    uint64_t timestamp_hz;              /* 0: no timestamps */
 };

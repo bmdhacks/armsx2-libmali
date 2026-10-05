@@ -31,6 +31,7 @@
 #include "vk_buffer.h"
 #include "vk_pipeline.h"
 
+#include "mali_arch.h"
 #include "mali_memory.h"
 #include "mali_queue.h"
 #include "mali_vk.h"
@@ -220,7 +221,7 @@ record_copy(struct mali_cmd_buffer *cmd, uint64_t src, uint64_t dst, uint64_t si
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdCopyBuffer2(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2 *info)
+MALI_PER_ARCH(CmdCopyBuffer2)(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2 *info)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(vk_buffer, src, info->srcBuffer);
@@ -235,8 +236,8 @@ mali_CmdCopyBuffer2(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2 *info
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdFillBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer,
-                   VkDeviceSize dstOffset, VkDeviceSize size, uint32_t data)
+MALI_PER_ARCH(CmdFillBuffer)(VkCommandBuffer commandBuffer, VkBuffer dstBuffer,
+                             VkDeviceSize dstOffset, VkDeviceSize size, uint32_t data)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(vk_buffer, dst, dstBuffer);
@@ -255,9 +256,9 @@ mali_CmdFillBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-mali_CmdUpdateBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer,
-                     VkDeviceSize dstOffset, VkDeviceSize dataSize,
-                     const void *pData)
+MALI_PER_ARCH(CmdUpdateBuffer)(VkCommandBuffer commandBuffer, VkBuffer dstBuffer,
+                               VkDeviceSize dstOffset, VkDeviceSize dataSize,
+                               const void *pData)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(vk_buffer, dst, dstBuffer);

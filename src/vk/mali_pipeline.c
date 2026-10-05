@@ -33,6 +33,8 @@
 #include "mali_cmd_buffer.h"
 #include "mali_vk.h"
 
+#include "mali_arch.h"
+
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -851,11 +853,11 @@ out:
    return result;
 
 VKAPI_ATTR VkResult VKAPI_CALL
-mali_CreateGraphicsPipelines(VkDevice _device, VkPipelineCache pipelineCache,
-                             uint32_t createInfoCount,
-                             const VkGraphicsPipelineCreateInfo *pCreateInfos,
-                             const VkAllocationCallbacks *pAllocator,
-                             VkPipeline *pPipelines)
+MALI_PER_ARCH(CreateGraphicsPipelines)(VkDevice _device, VkPipelineCache pipelineCache,
+                                       uint32_t createInfoCount,
+                                       const VkGraphicsPipelineCreateInfo *pCreateInfos,
+                                       const VkAllocationCallbacks *pAllocator,
+                                       VkPipeline *pPipelines)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
    CREATE_PIPELINES(create_graphics_pipeline, pCreateInfos, createInfoCount,
@@ -863,11 +865,11 @@ mali_CreateGraphicsPipelines(VkDevice _device, VkPipelineCache pipelineCache,
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-mali_CreateComputePipelines(VkDevice _device, VkPipelineCache pipelineCache,
-                            uint32_t createInfoCount,
-                            const VkComputePipelineCreateInfo *pCreateInfos,
-                            const VkAllocationCallbacks *pAllocator,
-                            VkPipeline *pPipelines)
+MALI_PER_ARCH(CreateComputePipelines)(VkDevice _device, VkPipelineCache pipelineCache,
+                                      uint32_t createInfoCount,
+                                      const VkComputePipelineCreateInfo *pCreateInfos,
+                                      const VkAllocationCallbacks *pAllocator,
+                                      VkPipeline *pPipelines)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
    CREATE_PIPELINES(create_compute_pipeline, pCreateInfos, createInfoCount,

@@ -85,10 +85,19 @@ mali_CreateDevice(VkPhysicalDevice physicalDevice,
    if (!dev)
       return vk_error(pdev, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   /* Same layering as the instance: ours, then Mesa's common entry points
-    * (added by vk_device_init), then the waist stubs. */
+   /*
+    * Four layers, first match wins: the device's own arch (mali_v9_* or
+    * mali_v11_*, MALI_PER_ARCH in the per-arch and command-stream files),
+    * then our arch-independent entry points, then Mesa's common entry
+    * points (added by vk_device_init), then the waist stubs. Only the
+    * first layer depends on pdev->arch; everything below it is the same
+    * table regardless of which GPU this is.
+    */
    struct vk_device_dispatch_table dispatch;
-   vk_device_dispatch_table_from_entrypoints(&dispatch, &mali_device_entrypoints, true);
+   vk_device_dispatch_table_from_entrypoints(
+      &dispatch, pdev->arch == 9 ? &mali_v9_device_entrypoints : &mali_v11_device_entrypoints,
+      true);
+   vk_device_dispatch_table_from_entrypoints(&dispatch, &mali_device_entrypoints, false);
 
    /* Checks the extension names and the requested features against what
     * the physical device reports (VK_ERROR_EXTENSION_NOT_PRESENT /

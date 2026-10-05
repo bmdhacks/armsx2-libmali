@@ -561,8 +561,12 @@ physical_device_create(struct mali_instance *instance, const char *path,
    snprintf(pdev->path, sizeof(pdev->path), "%s", path);
    pdev->props = kb->props;
    pdev->cs_work_registers = kb->glb.cs_work_registers;
+   pdev->arch = pdev->props.arch_major;
    mali_kbase_destroy(kb);
 
+   /* mali_device_name() is still the only arch gate: it accepts arch
+    * MALI_PAN_ARCH (11) and rejects everything else, including arch 9
+    * (G57/G77, job manager), for which this build has no back half yet. */
    char name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
    if (!mali_device_name(&pdev->props, name, sizeof(name))) {
       mesa_logw("libmali: skipping %s: GPU product 0x%04x (arch %u) is not "
