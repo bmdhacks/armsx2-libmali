@@ -162,6 +162,14 @@ struct mali_render_state {
    int crc_rt;
    uint32_t crc_clear_lo;
 
+   /* The Tiler Context's and Framebuffer Parameters' First provoking
+    * vertex bit (provokingVertexModePerPipeline is false: one mode for
+    * the whole pass). Taken from the first pipeline bound while the pass
+    * is active (mali_gfx_update_dirty); true, the hardware and Vulkan
+    * default, until one is. */
+   bool first_provoking_vertex;
+   bool first_provoking_vertex_set;
+
    /* Set by the first draw or full-screen draw of the pass. */
    uint64_t tiler;                  /* Tiler Contexts, 0 if nothing tiled */
    void *tiler_cpu;

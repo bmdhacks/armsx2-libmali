@@ -135,7 +135,7 @@ MALI_PER_ARCH(cmd_render_tiler)(struct mali_cmd_buffer *cmd)
          }
          cfg.hierarchy_mask = MALI_TILER_HIERARCHY_MASK;
          cfg.sample_pattern = MALI_SAMPLE_PATTERN_SINGLE_SAMPLED;
-         cfg.first_provoking_vertex = true;
+         cfg.first_provoking_vertex = r->first_provoking_vertex;
          cfg.fb_width = r->desc.width;
          cfg.fb_height = r->desc.height;
          cfg.layer_count = MIN2(layers - i * MALI_LAYERS_PER_TILER_CTX,

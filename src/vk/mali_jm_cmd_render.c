@@ -160,7 +160,7 @@ MALI_PER_ARCH(cmd_render_tiler)(struct mali_cmd_buffer *cmd)
          cfg.polygon_list = 0;
          cfg.hierarchy_mask = mask;
          cfg.sample_pattern = MALI_SAMPLE_PATTERN_SINGLE_SAMPLED;
-         cfg.first_provoking_vertex = true;
+         cfg.first_provoking_vertex = r->first_provoking_vertex;
          cfg.fb_width = r->desc.width;
          cfg.fb_height = r->desc.height;
          cfg.layer_count = 1;
