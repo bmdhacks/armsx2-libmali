@@ -130,11 +130,12 @@ _vk_c_args = [
 
 # The files built once per GPU architecture:
 # descriptor, sampler, view, format-table, shader, blend-shader and
-# pipeline packing, and the command-buffer builders both back halves
-# share (mali_cmd_state.c, mali_fb.c, mali_cmd_meta_gfx.c). Each copy names
-# its functions mali_v9_* or mali_v11_* (MALI_PER_ARCH, vk/mali_arch.h).
+# pipeline packing, the command-buffer builders both back halves share
+# (mali_cmd_state.c, mali_fb.c, mali_cmd_meta_gfx.c) and the buffer copies
+# (mali_cmd_copy.c, on each back half's dispatch). Each copy names its
+# functions mali_v9_* or mali_v11_* (MALI_PER_ARCH, vk/mali_arch.h).
 _vk_per_arch_files = files(
-  'vk/mali_blend.c', 'vk/mali_cmd_meta_gfx.c', 'vk/mali_cmd_state.c',
+  'vk/mali_blend.c', 'vk/mali_cmd_copy.c', 'vk/mali_cmd_meta_gfx.c', 'vk/mali_cmd_state.c',
   'vk/mali_descriptor_set.c', 'vk/mali_fb.c', 'vk/mali_format_table.c',
   'vk/mali_image_view.c', 'vk/mali_pipeline.c', 'vk/mali_pipeline_state.c',
   'vk/mali_sampler.c', 'vk/mali_shader.c',
@@ -158,8 +159,8 @@ libmali_vk = static_library(
   files('vk/mali_bo_pool.c', 'vk/mali_descriptor_set_layout.c',
         'vk/mali_nir_lower_descriptors.c', 'vk/mali_nir_lower_input_attachments.c'),
   # Command buffers, the CSF queue, submit and sync.
-  files('vk/mali_cmd_buffer.c', 'vk/mali_cmd_copy.c', 'vk/mali_cmd_dispatch.c',
-        'vk/mali_queue.c', 'vk/mali_sync.c'),
+  files('vk/mali_cmd_buffer.c', 'vk/mali_cmd_dispatch.c', 'vk/mali_queue.c',
+        'vk/mali_sync.c'),
   # Render passes, draws, image transfers (the CSF side; the shared builders
   # are per-arch files).
   files('vk/mali_cmd_draw.c', 'vk/mali_cmd_image.c', 'vk/mali_cmd_render.c'),
@@ -196,8 +197,8 @@ libmali_vk_v11 = static_library(
 # arch picks which back half a VkDevice uses (mali_device.c).
 libmali_vk_v9 = static_library(
   'mali_vk_v9',
-  files('vk/mali_jm_cmd_buffer.c', 'vk/mali_jm_queue.c', 'vk/mali_jm_sync_file.c',
-        'vk/mali_sync.c', 'vk/mali_wsi.c'),
+  files('vk/mali_jm_cmd_buffer.c', 'vk/mali_jm_cmd_dispatch.c', 'vk/mali_jm_queue.c',
+        'vk/mali_jm_sync_file.c', 'vk/mali_sync.c', 'vk/mali_wsi.c'),
   _vk_per_arch_files,
   mali_entrypoints[0],   # the header only; the tables are libmali_vk's
   include_directories : _vk_inc,

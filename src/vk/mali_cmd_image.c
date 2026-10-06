@@ -143,7 +143,7 @@ dispatch_copy(struct mali_cmd_buffer *cmd, const struct copy_surface *src, int s
    const uint32_t base[3] = {0, 0, 0};
    const uint32_t groups[3] = {DIV_ROUND_UP(w_blocks, MALI_META_COPY_WG),
                                DIV_ROUND_UP(h_blocks, MALI_META_COPY_WG), layers};
-   mali_cmd_dispatch_shader(cmd, s, NULL, &push, sizeof(push), base, groups);
+   MALI_PER_ARCH(cmd_dispatch_shader)(cmd, s, NULL, &push, sizeof(push), base, groups);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -339,7 +339,7 @@ copy_from_afbc(struct mali_cmd_buffer *cmd, const struct mali_image *img, unsign
    };
    const uint32_t groups[3] = {DIV_ROUND_UP(w, MALI_META_COPY_WG),
                                DIV_ROUND_UP(h, MALI_META_COPY_WG), layers};
-   mali_cmd_dispatch_meta(cmd, s, &push, sizeof(push), groups,
+   MALI_PER_ARCH(cmd_dispatch_meta)(cmd, s, &push, sizeof(push), groups,
                           (const uint32_t(*)[8])tex, 1);
 }
 

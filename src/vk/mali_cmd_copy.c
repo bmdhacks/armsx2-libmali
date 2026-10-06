@@ -5,7 +5,9 @@
 
 /*
  * vkCmdCopyBuffer, vkCmdFillBuffer and vkCmdUpdateBuffer, as compute
- * dispatches of small internal shaders on the compute subqueue.
+ * dispatches of small internal shaders: on the compute subqueue (CSF, v11)
+ * or as Compute jobs in the open batch's vtc chain (job manager, v9).
+ * Built once per arch.
  *
  * Why compute and not the command stream itself: CS LOAD_MULTIPLE /
  * STORE_MULTIPLE move at most 64 bytes per instruction pair through the
@@ -22,7 +24,11 @@
  */
 
 #include "mali_blend.h"
+#if PAN_ARCH >= 10
 #include "mali_cmd_buffer.h"
+#else
+#include "mali_jm.h"
+#endif
 
 #include <string.h>
 
@@ -33,7 +39,6 @@
 
 #include "mali_arch.h"
 #include "mali_memory.h"
-#include "mali_queue.h"
 #include "mali_vk.h"
 
 #define META_WG_SIZE 64
@@ -166,7 +171,7 @@ get_meta(struct mali_cmd_buffer *cmd, enum mali_meta_shader m)
 }
 
 void
-mali_meta_finish(struct mali_device *dev)
+MALI_PER_ARCH(meta_finish)(struct mali_device *dev)
 {
    for (unsigned i = 0; i < MALI_META_COUNT; i++) {
       MALI_PER_ARCH(shader_unref)(dev, dev->meta[i]);
@@ -191,7 +196,7 @@ dispatch_elems(struct mali_cmd_buffer *cmd, enum mali_meta_shader m,
       *count_field = n;
       const uint32_t base[3] = {0, 0, 0};
       const uint32_t groups[3] = {DIV_ROUND_UP(n, META_WG_SIZE), 1, 1};
-      mali_cmd_dispatch_shader(cmd, s, NULL, push, push_size, base, groups);
+      MALI_PER_ARCH(cmd_dispatch_shader)(cmd, s, NULL, push, push_size, base, groups);
       elems -= n;
       if (src)
          *src += (uint64_t)n * elem;

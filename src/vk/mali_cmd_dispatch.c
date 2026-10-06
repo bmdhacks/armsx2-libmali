@@ -132,7 +132,7 @@ dispatch(struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
 }
 
 void
-mali_cmd_dispatch_shader(struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
+MALI_PER_ARCH(cmd_dispatch_shader)(struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
                          const struct mali_desc_state *desc, const void *push,
                          uint32_t push_size, const uint32_t base[3],
                          const uint32_t groups[3])
@@ -141,7 +141,7 @@ mali_cmd_dispatch_shader(struct mali_cmd_buffer *cmd, const struct mali_shader *
 }
 
 void
-mali_cmd_dispatch_meta(struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
+MALI_PER_ARCH(cmd_dispatch_meta)(struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
                        const void *push, uint32_t push_size, const uint32_t groups[3],
                        const uint32_t (*textures)[8], unsigned texture_count)
 {
@@ -158,7 +158,7 @@ MALI_PER_ARCH(CmdDispatchBase)(VkCommandBuffer commandBuffer, uint32_t baseGroup
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    const uint32_t base[3] = {baseGroupX, baseGroupY, baseGroupZ};
    const uint32_t groups[3] = {groupCountX, groupCountY, groupCountZ};
-   mali_cmd_dispatch_shader(cmd, cmd->compute.shader, &cmd->compute.desc,
+   MALI_PER_ARCH(cmd_dispatch_shader)(cmd, cmd->compute.shader, &cmd->compute.desc,
                             cmd->push_constants, sizeof(cmd->push_constants),
                             base, groups);
 }

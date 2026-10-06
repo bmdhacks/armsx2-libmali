@@ -235,27 +235,8 @@ void mali_cmd_emit_barrier(struct mali_cmd_buffer *cmd, const struct mali_cs_dep
  * Called before a fragment job and at the end of the command buffer. */
 void mali_cmd_frag_flush_pending(struct mali_cmd_buffer *cmd);
 
-/* ---------------------------------------------------------------------- */
-/* Compute (mali_cmd_dispatch.c)                                           */
-
-/*
- * One compute dispatch on the compute subqueue: FAU from push constants and
- * the compute system values, the resource table from the bound sets
- * (desc may be NULL for shaders without descriptors), TLS/WLS, RUN_COMPUTE.
- */
-void mali_cmd_dispatch_shader(struct mali_cmd_buffer *cmd,
-                              const struct mali_shader *cs,
-                              const struct mali_desc_state *desc,
-                              const void *push, uint32_t push_size,
-                              const uint32_t base[3], const uint32_t groups[3]);
-
-/* A dispatch of an internal shader whose resource table 0 holds a sampler
- * at index 0 and `textures` (packed Texture descriptors) from index 1. */
-void mali_cmd_dispatch_meta(struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
-                            const void *push, uint32_t push_size, const uint32_t groups[3],
-                            const uint32_t (*textures)[8], unsigned texture_count);
-
-/* The internal copy/fill shaders (mali_cmd_copy.c). */
-void mali_meta_finish(struct mali_device *dev);
+/* Compute dispatch (mali_cmd_dispatch.c) and the internal copy shaders
+ * (mali_cmd_copy.c): mali_cmd_gfx.h, shared with the job-manager back
+ * half. */
 
 #endif

@@ -234,6 +234,31 @@ struct mali_gfx_draw_state {
 };
 
 /* ---------------------------------------------------------------------- */
+/* Compute dispatch (CSF: mali_cmd_dispatch.c; JM: mali_jm_cmd_dispatch.c) */
+
+/*
+ * One compute dispatch: FAU from push constants and the compute system
+ * values, the resource table from the bound sets (desc may be NULL for
+ * shaders without descriptors), TLS/WLS; RUN_COMPUTE on the compute
+ * subqueue (CSF) or a Compute job in the open batch's vtc chain (JM).
+ */
+MALI_PER_ARCH_DECL(void, cmd_dispatch_shader,
+                   (struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
+                    const struct mali_desc_state *desc, const void *push, uint32_t push_size,
+                    const uint32_t base[3], const uint32_t groups[3]));
+
+/* A dispatch of an internal shader whose resource table 0 holds a sampler
+ * at index 0 and `textures` (packed Texture descriptors) from index 1. */
+MALI_PER_ARCH_DECL(void, cmd_dispatch_meta,
+                   (struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
+                    const void *push, uint32_t push_size, const uint32_t groups[3],
+                    const uint32_t (*textures)[8], unsigned texture_count));
+
+/* The internal copy/fill shaders, blend shaders and internal fragment
+ * shaders of a device, freed at device destruction (mali_cmd_copy.c). */
+MALI_PER_ARCH_DECL(void, meta_finish, (struct mali_device *dev));
+
+/* ---------------------------------------------------------------------- */
 /* mali_cmd_render.c (the back half's render pass; JM: mali_jm_cmd_render.c) */
 
 /* Start a render pass instance. rt/z/s images must be bound. */

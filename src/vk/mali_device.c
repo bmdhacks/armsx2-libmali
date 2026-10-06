@@ -125,7 +125,7 @@ device_fe_state_init(struct mali_device *dev)
 static void
 device_fe_state_finish(struct mali_device *dev)
 {
-   mali_meta_finish(dev);
+   mali_arch_dispatch(mali_device_physical(dev)->arch, meta_finish, dev);
    mali_cmd_slabs_finish(dev);
 
    pthread_cond_destroy(&dev->cond);

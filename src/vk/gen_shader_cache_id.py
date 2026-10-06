@@ -52,6 +52,7 @@ EXCLUDE_FILES = {
     'src/vk/mali_image_view.c',
     'src/vk/mali_instance.c',
     'src/vk/mali_jm_cmd_buffer.c',
+    'src/vk/mali_jm_cmd_dispatch.c',
     'src/vk/mali_jm_queue.c',
     'src/vk/mali_jm_sync_file.c',
     'src/vk/mali_queue.c',

@@ -52,6 +52,8 @@
 #if !defined(PAN_ARCH) || PAN_ARCH != 9
 #error "mali_jm.h is the v9 (job manager) back half: build with PAN_ARCH=9"
 #endif
+#include "genxml/gen_macros.h"
+
 #include "mali_arch.h"
 #include "mali_cmd_gfx.h"
 #include "mali_shader.h"
@@ -72,13 +74,23 @@
 /* ---------------------------------------------------------------------- */
 /* Command buffers: batches and job chains                                 */
 
-/* One job chain = one atom. Built by the command-buffer side (G8). */
+/* mali_jm_chain::pending: what the chain's next job has to wait for (an
+ * in-chain barrier, g57-backend.md §5.2). BARRIER: the next job sets the
+ * header's Barrier bit (it starts after every earlier job of the chain).
+ * FLUSH: a Cache Flush job with Barrier and "Invalidate Shader Core Other"
+ * goes first, for reads through a shader core's read-only caches (texture,
+ * attribute) of what earlier jobs wrote. */
+#define MALI_JM_PENDING_BARRIER (1u << 0)
+#define MALI_JM_PENDING_FLUSH   (1u << 1)
+
+/* One job chain = one atom. */
 struct mali_jm_chain {
    uint64_t first;          /* GPU VA of the first job; 0: empty */
    uint32_t *prev_next;     /* CPU pointer to the last header's Next (written only) */
    uint16_t index;          /* last job index (Mesa's scheme: unique, increasing) */
    uint16_t tiler_dep;      /* index of the last tiler-side job */
    uint32_t jobs;
+   uint8_t pending;         /* MALI_JM_PENDING_* */
 };
 
 /* A run of fragment jobs submitted as one fragment atom. */
@@ -92,6 +104,10 @@ struct mali_jm_frag_seg {
  * of the same command buffer whose fragment work must finish first. */
 #define MALI_JM_AFTER_NONE    0
 #define MALI_JM_AFTER_EARLIER 0xffff
+/* Every earlier fragment-slot atom of a batch with fragment-side transfer
+ * work (mali_jm_batch::frag_xfer): what a barrier whose fragment-slot
+ * source stages are only transfer stages waits for. */
+#define MALI_JM_AFTER_EARLIER_XFER 0xfffe
 
 struct mali_jm_batch {
    struct mali_jm_chain vtc;
@@ -103,21 +119,72 @@ struct mali_jm_batch {
    uint16_t vtc_after_frag; /* MALI_JM_AFTER_* or 1 + batch index */
    bool frag_after_vtc;     /* no vtc chain of its own, but its fragment work
                                must follow the vtc work submitted before it */
+   bool frag_xfer;          /* its fragment segments carry transfer work
+                               (MALI_JM_AFTER_EARLIER_XFER) */
    uint32_t passes, draws;
    uint64_t est_heap_bytes; /* batch closing (G9) */
 };
 
-/* Inside the v9 command buffer: what submit reads. */
+/*
+ * Batch limits (g57-backend.md §5.3). A batch is closed before a job that
+ * would take its vtc chain past MALI_JM_BATCH_MAX_JOBS jobs, outside a
+ * render pass (a pass's tiling stays in one batch; the render pass side
+ * checks the limit when a pass begins). The limit keeps a chain's GPU time
+ * far below the T820 kernel's 1 s hard-stop (soft-stops resume a chain at
+ * a job boundary, so only one long job is at risk, design §9.5) and the
+ * 16-bit job index far from wrapping. 1024 vtc jobs are 3-6 ms of tiling
+ * at ARMSX2's draw sizes (device check: D13 tunes it).
+ */
+#define MALI_JM_BATCH_MAX_JOBS   1024
+#define MALI_JM_BATCH_MAX_PASSES 16
+
+/* mali_jm_cmd::end_req: ordering a barrier recorded in this command buffer
+ * asks of work after it, in later command buffers (the queue carries it to
+ * the next atom of the slot): the next vtc atom waits for the newest
+ * fragment atom, the next fragment atom of a batch without a vtc chain
+ * waits for the newest vtc atom. */
+#define MALI_JM_REQ_VTC_AFTER_FRAG      (1u << 0)
+#define MALI_JM_REQ_FRAG_AFTER_VTC      (1u << 1)
+#define MALI_JM_REQ_VTC_AFTER_FRAG_XFER (1u << 2)
+
+/* A GPU-written range to restore before a command buffer runs again
+ * (mali_jm_cmd::resets): size bytes at dst, from data_off in
+ * mali_jm_cmd::reset_data, or zero when data_off is UINT32_MAX. */
+struct mali_jm_reset {
+   void *dst;
+   uint32_t data_off;
+   uint32_t size;
+};
+
+/* Inside the v9 command buffer: what submit reads, and the open batch. */
 struct mali_jm_cmd {
    struct util_dynarray batches; /* struct mali_jm_batch, closed batches */
    struct util_dynarray frags;   /* struct mali_jm_frag_seg */
+
+   /* The batch being recorded (when `open`); its fragment segments are
+    * already in frags, from cur.frag_first. */
+   struct mali_jm_batch cur;
+   bool open;
+   /* Barrier requirements recorded and not yet applied to a job of the
+    * slot they order (mali_jm_cmd_buffer.c), and what is left of them at
+    * the end of the command buffer (MALI_JM_REQ_*), for the queue. */
+   uint8_t req;
+   uint8_t end_req;
+
+   /* Re-submission (g57-backend.md §5.2): command buffers recorded
+    * without ONE_TIME_SUBMIT note every GPU-written word, and submit
+    * restores them before every run after the first. */
+   bool resubmit;
+   bool submitted;
+   uint64_t last_seq;            /* the submission that ran it last */
+   struct util_dynarray resets;  /* struct mali_jm_reset */
+   struct util_dynarray reset_data;
 };
 
 /*
  * The v9 command buffer: what submit reads (jm), and the recording state
  * the builders shared with the v11 back half read, under the same member
- * names as the v11 struct (mali_cmd_state.h lists them). The job-chain
- * recording state (chains being written, the draw template) is to come.
+ * names as the v11 struct (mali_cmd_state.h lists them).
  */
 struct mali_cmd_buffer {
    struct vk_command_buffer vk;
@@ -179,7 +246,7 @@ mali_cmd_alloc(struct mali_cmd_buffer *cmd, uint64_t size, uint64_t align)
    return MALI_PER_ARCH(cmd_alloc_slow)(cmd, size, align);
 }
 
-/* vkCmdBindPipeline, and the pipeline ops' bind (mali_pipeline.c). */
+/* vkCmdBindPipeline, and the pipeline ops' bind (mali_cmd_state.c). */
 void MALI_PER_ARCH(cmd_bind_pipeline)(struct mali_cmd_buffer *cmd, struct vk_pipeline *pipeline);
 
 extern const struct vk_command_buffer_ops MALI_PER_ARCH(cmd_buffer_ops);
@@ -191,11 +258,79 @@ mali_jm_cmd_batches(struct mali_cmd_buffer *cmd, uint32_t *count)
    return util_dynarray_begin(&cmd->jm.batches);
 }
 
-/* Append a closed batch (and its fragment segments). For the recorder and
- * for tests that build chains by hand. Returns false on allocation
- * failure. */
+/* Append a closed batch (and its fragment segments) behind the batches
+ * recorded so far. For tests that build chains by hand; the open batch, if
+ * any, is closed first. Returns false on allocation failure. */
 bool mali_jm_cmd_add_batch(struct mali_cmd_buffer *cmd, const struct mali_jm_batch *batch,
                            const struct mali_jm_frag_seg *frags, uint32_t frag_count);
+
+/* ---------------------------------------------------------------------- */
+/* Recording job chains (mali_jm_cmd_buffer.c)                             */
+
+/* The open batch, opened if there is none. NULL on allocation failure
+ * (the command buffer has the error). */
+struct mali_jm_batch *mali_jm_cmd_batch(struct mali_cmd_buffer *cmd);
+
+/* Close the open batch: it joins the closed batches if it has any job,
+ * with the barrier requirements recorded for its work. */
+void mali_jm_cmd_batch_close(struct mali_cmd_buffer *cmd);
+
+/* The open batch's vtc chain, for a job outside a render pass: closes a
+ * full batch first (MALI_JM_BATCH_MAX_JOBS). NULL on failure. */
+struct mali_jm_chain *mali_jm_cmd_vtc(struct mali_cmd_buffer *cmd);
+
+/* The open batch's current fragment segment, started if the batch has
+ * none; with new_segment, always a new one (a new fragment atom). Applies
+ * the barriers recorded for fragment work. NULL on failure. The vtc
+ * variant above applies those for vtc work: call it before the first job
+ * of a render pass's tiling (a batch can still close there, since nothing
+ * of the pass is in it yet), and before each job outside a pass. */
+struct mali_jm_chain *mali_jm_cmd_frag(struct mali_cmd_buffer *cmd, bool new_segment);
+
+/* The open batch's fragment work includes a transfer (a fragment-side
+ * copy, blit, resolve or image clear): barriers from transfer stages wait
+ * for it. */
+void mali_jm_cmd_mark_frag_transfer(struct mali_cmd_buffer *cmd);
+
+/*
+ * Append a job to chain c: size bytes (a v9 job, its header included) at
+ * 128-byte alignment from command memory, with the header written (type,
+ * the next index, Barrier from the chain's pending barrier or `barrier`,
+ * Dependency 1 = dep1, Dependency 2 = the previous tiler-side job for a
+ * tiler-side job, Next = 0) and linked behind the chain's last job. A
+ * pending Cache Flush job goes in first. The caller writes the payload,
+ * every byte of it (slabs are recycled without clearing). {0} on failure,
+ * with the command buffer's error set.
+ */
+struct mali_ptr mali_jm_cmd_add_job(struct mali_cmd_buffer *cmd, struct mali_jm_chain *c,
+                                    enum mali_job_type type, unsigned size, bool barrier,
+                                    uint16_t dep1);
+
+/* A Write Value job on chain c (timestamps, availability, tests). */
+bool mali_jm_cmd_write_value(struct mali_cmd_buffer *cmd, struct mali_jm_chain *c,
+                             enum mali_write_value_type type, uint64_t addr, uint64_t value,
+                             bool barrier);
+
+/* Note size bytes at dst as GPU-written: restored from tmpl (or zeroed,
+ * tmpl NULL) before every run after the first. Free for ONE_TIME_SUBMIT
+ * command buffers. */
+void mali_jm_cmd_note_reset(struct mali_cmd_buffer *cmd, void *dst, const void *tmpl,
+                            uint32_t size);
+
+/*
+ * The JM barrier: what VkPipelineStageFlags2/VkAccessFlags2 on each side
+ * require of the job chains (g57-backend.md §5.3): an in-chain barrier on
+ * the vtc or fragment chain, a closed batch with the next one waiting for
+ * the fragment atom, or a requirement the queue resolves at submit.
+ * Outside a render pass; vkCmdPipelineBarrier2 handles the in-pass case.
+ */
+void mali_jm_cmd_barrier(struct mali_cmd_buffer *cmd, VkPipelineStageFlags2 src_stages,
+                         VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stages,
+                         VkAccessFlags2 dst_access);
+
+/* Before a submission runs cmd: restore what earlier runs changed. With
+ * dev->lock held, the command buffer not in flight. */
+void mali_jm_cmd_prepare_submit(struct mali_cmd_buffer *cmd);
 
 /* ---------------------------------------------------------------------- */
 /* The device and queue                                                    */
@@ -308,6 +443,12 @@ struct mali_jm_queue {
    uint64_t seq;
    mali_jm_ref tracker;
    uint64_t completed_seq;
+   /* The newest fragment atom of a batch with fragment-side transfer
+    * work (MALI_JM_AFTER_EARLIER_XFER). */
+   mali_jm_ref last_frag_xfer;
+   /* Barrier requirements (MALI_JM_REQ_*) recorded at the end of a
+    * command buffer and not yet met by a later atom. */
+   uint8_t carry;
 };
 
 VkResult MALI_PER_ARCH(device_init)(struct mali_device *dev);

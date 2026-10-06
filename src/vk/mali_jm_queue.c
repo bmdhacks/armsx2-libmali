@@ -15,10 +15,12 @@
  *   vtc(b):  slot 1, core_req CS|T|CF|COHERENT_GROUP
  *            pre_dep[0] ORDER on the previous atom in slot 1's order
  *            pre_dep[1] ORDER on the newest fragment-slot atom it has to
- *                       wait for: the batch's vtc_after_frag, the last
- *                       fragment reader of its tiler heap slot, and (first
- *                       vtc atom of a submission) semaphore waits whose
- *                       destination stages include vtc-slot stages
+ *                       wait for: the batch's vtc_after_frag (or a
+ *                       barrier at the end of an earlier command buffer,
+ *                       mali_jm_cmd::end_req), the last fragment reader of
+ *                       its tiler heap slot, and (first vtc atom of a
+ *                       submission) semaphore waits whose destination
+ *                       stages include vtc-slot stages
  *   frag(b): slot 0, core_req FS, one per fragment segment
  *            pre_dep[0] DATA on vtc(b) (or, with frag_after_vtc and no vtc
  *                       chain, on the newest vtc-slot atom)
@@ -787,10 +789,17 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit)
 
          if (bt->vtc.first) {
             mali_jm_ref req = frag_req;
-            if (bt->vtc_after_frag == MALI_JM_AFTER_EARLIER)
+            if (bt->vtc_after_frag == MALI_JM_AFTER_EARLIER ||
+                (q->carry & MALI_JM_REQ_VTC_AFTER_FRAG)) {
                req = newer(req, q->last[MALI_JM_SLOT_FRAG]);
-            else if (bt->vtc_after_frag && bt->vtc_after_frag - 1u < k)
-               req = newer(req, batch_frag[bt->vtc_after_frag - 1u]);
+            } else {
+               if (bt->vtc_after_frag == MALI_JM_AFTER_EARLIER_XFER ||
+                   (q->carry & MALI_JM_REQ_VTC_AFTER_FRAG_XFER))
+                  req = newer(req, q->last_frag_xfer);
+               if (bt->vtc_after_frag && bt->vtc_after_frag < MALI_JM_AFTER_EARLIER_XFER &&
+                   bt->vtc_after_frag - 1u < k)
+                  req = newer(req, batch_frag[bt->vtc_after_frag - 1u]);
+            }
             if (bt->heap_slot >= 0 && bt->heap_slot < MALI_JM_HEAP_SLOTS_MAX)
                req = newer(req, q->heap_last_frag[bt->heap_slot]);
             vtc = mali_jm_build_atom(dev, MALI_JM_ATOM_VTC, MALI_JM_SLOT_VTC, MALI_JM_REQ_VTC,
@@ -799,6 +808,7 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit)
             if (!vtc)
                goto out;
             frag_req = 0;
+            q->carry &= ~(MALI_JM_REQ_VTC_AFTER_FRAG | MALI_JM_REQ_VTC_AFTER_FRAG_XFER);
          }
 
          mali_jm_ref frag = 0;
@@ -807,7 +817,7 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit)
             if (!seg->chain.first)
                continue;
             mali_jm_ref d = vtc;
-            if (!d && bt->frag_after_vtc)
+            if (!d && (bt->frag_after_vtc || (q->carry & MALI_JM_REQ_FRAG_AFTER_VTC)))
                d = q->last[MALI_JM_SLOT_VTC];
             /* DATA only on a hardware vtc atom: a fence wait's error must
              * not fail the work behind it. */
@@ -820,17 +830,59 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit)
                                       q->last[MALI_JM_SLOT_FRAG], KB_JM_DEP_ORDER, &result);
             if (!frag)
                goto out;
+            q->carry &= ~MALI_JM_REQ_FRAG_AFTER_VTC;
          }
          if (frag && bt->heap_slot >= 0 && bt->heap_slot < MALI_JM_HEAP_SLOTS_MAX)
             q->heap_last_frag[bt->heap_slot] = frag;
+         if (frag && bt->frag_xfer)
+            q->last_frag_xfer = frag;
          /* The newest fragment-slot atom at or before this batch. */
          batch_frag[k] = q->last[MALI_JM_SLOT_FRAG];
       }
+      /* Barriers at its end order the next atoms of later command
+       * buffers (and submissions). */
+      q->carry |= cmd->jm.end_req;
    }
 
 out:
    free(batch_frag);
    return result;
+}
+
+/*
+ * Command buffers that ran before and may run again (recorded without
+ * ONE_TIME_SUBMIT): wait until their last run has completed, which only a
+ * SIMULTANEOUS_USE command buffer may not have (one job chain cannot run
+ * twice at once, so such submissions run one after the other), then
+ * restore the words the GPU wrote (mali_jm_cmd_prepare_submit). With
+ * dev->lock held; drops it while waiting.
+ */
+static VkResult
+prepare_command_buffers(struct mali_device *dev, struct vk_queue_submit *submit)
+{
+   struct mali_jm_device *jd = dev->jm;
+   struct mali_jm_queue *q = jd->queue;
+
+   for (uint32_t c = 0; c < submit->command_buffer_count; c++) {
+      struct mali_cmd_buffer *cmd =
+         container_of(submit->command_buffers[c], struct mali_cmd_buffer, vk);
+      if (!cmd->jm.resubmit)
+         continue;
+      for (uint32_t d = 0; d < c; d++) {
+         if (submit->command_buffers[d] == submit->command_buffers[c])
+            return vk_errorf(dev, VK_ERROR_FEATURE_NOT_PRESENT,
+                             "a command buffer twice in one submission (SIMULTANEOUS_USE) "
+                             "is not supported on the job manager");
+      }
+      if (!cmd->jm.submitted)
+         continue;
+      while (q->completed_seq < cmd->jm.last_seq && !jd->fault && !dev->lost)
+         mali_jm_wait_locked(dev, os_time_get_nano() + READER_SLICE_NS);
+      if (jd->fault || dev->lost)
+         return VK_ERROR_DEVICE_LOST;
+      mali_jm_cmd_prepare_submit(cmd);
+   }
+   return VK_SUCCESS;
 }
 
 VkResult
@@ -855,8 +907,20 @@ MALI_PER_ARCH(queue_submit)(struct vk_queue *vkq, struct vk_queue_submit *submit
       return VK_ERROR_DEVICE_LOST;
    }
 
+   VkResult result = prepare_command_buffers(dev, submit);
+   if (result != VK_SUCCESS) {
+      char copy[sizeof(jd->fault_msg)];
+      const bool fault = jd->fault && !dev->lost;
+      if (fault)
+         snprintf(copy, sizeof(copy), "%s", jd->fault_msg);
+      pthread_mutex_unlock(&dev->lock);
+      if (fault)
+         report_fault(dev, copy);
+      return result;
+   }
+
    mali_jm_build_begin(dev, q->seq + 1);
-   VkResult result = build_submit(dev, submit);
+   result = build_submit(dev, submit);
    mali_jm_ref tracker = 0;
    bool built = false;
    if (result == VK_SUCCESS)
@@ -871,6 +935,12 @@ MALI_PER_ARCH(queue_submit)(struct vk_queue *vkq, struct vk_queue_submit *submit
          /* Everything already finished and was read meanwhile. */
          if (!tracker && q->completed_seq < q->seq)
             q->completed_seq = q->seq;
+      }
+      for (uint32_t c = 0; c < submit->command_buffer_count; c++) {
+         struct mali_cmd_buffer *cmd =
+            container_of(submit->command_buffers[c], struct mali_cmd_buffer, vk);
+         cmd->jm.submitted = true;
+         cmd->jm.last_seq = q->seq;
       }
 
       /* Binary semaphore waits consume the payload; signals are pending on

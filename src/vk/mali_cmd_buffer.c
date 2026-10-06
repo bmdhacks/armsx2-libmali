@@ -4,8 +4,9 @@
  */
 
 /*
- * Command buffers: memory, the per-subqueue streams, begin/end, barriers,
- * descriptor-set and push-constant binding.
+ * Command buffers: memory, the per-subqueue streams, begin/end, barriers.
+ * (The pipeline, descriptor-set and push-constant binds are in
+ * mali_cmd_state.c, shared with the job-manager back half.)
  *
  * The recording follows panvk v11 (Mesa csf/panvk_vX_cmd_buffer.c), which
  * "which source wins" makes the reference for command-stream encoding,
@@ -24,7 +25,6 @@
 #include "vk_command_pool.h"
 #include "vk_log.h"
 #include "vk_pipeline.h"
-#include "vk_pipeline_layout.h"
 #include "vk_synchronization.h"
 #include "vk_util.h"
 
@@ -989,102 +989,4 @@ MALI_PER_ARCH(CmdPipelineBarrier2)(VkCommandBuffer commandBuffer,
          deps.src[vt].wait_sb_mask = 0;
    }
    mali_cmd_emit_barrier(cmd, &deps);
-}
-
-/* ---------------------------------------------------------------------- */
-/* Binding                                                                 */
-
-void
-MALI_PER_ARCH(cmd_bind_pipeline)(struct mali_cmd_buffer *cmd, struct vk_pipeline *pipeline)
-{
-   if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_COMPUTE)
-      cmd->compute.shader = mali_compute_pipeline(pipeline)->cs;
-   else if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS)
-      MALI_PER_ARCH(cmd_bind_graphics)(cmd, mali_graphics_pipeline(pipeline));
-}
-
-/* Replaces the runtime's vkCmdBindPipeline, which only calls through the
- * pipeline's ops to the same place. */
-VKAPI_ATTR void VKAPI_CALL
-MALI_PER_ARCH(CmdBindPipeline)(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint,
-                               VkPipeline _pipeline)
-{
-   VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
-   VK_FROM_HANDLE(vk_pipeline, pipeline, _pipeline);
-   assert(pipeline->bind_point == pipelineBindPoint);
-   MALI_PER_ARCH(cmd_bind_pipeline)(cmd, pipeline);
-}
-
-VKAPI_ATTR void VKAPI_CALL
-MALI_PER_ARCH(CmdBindDescriptorSets2KHR)(VkCommandBuffer commandBuffer,
-                                         const VkBindDescriptorSetsInfoKHR *info)
-{
-   VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
-   VK_FROM_HANDLE(vk_pipeline_layout, layout, info->layout);
-
-   struct mali_desc_state *states[2];
-   unsigned n = 0;
-   if (info->stageFlags & VK_SHADER_STAGE_COMPUTE_BIT)
-      states[n++] = &cmd->compute.desc;
-   if (info->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS)
-      states[n++] = &cmd->gfx.desc;
-
-   if (info->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS) {
-      /* The draw rebuilds a stage's table when it reads one of these. */
-      const uint32_t sets = BITFIELD_RANGE(info->firstSet, info->descriptorSetCount);
-      cmd->gfx.draw.vs_sets_dirty |= sets;
-      cmd->gfx.draw.fs_sets_dirty |= sets;
-   }
-
-   for (unsigned s = 0; s < n; s++) {
-      struct mali_desc_state *st = states[s];
-      uint32_t dyn = 0;
-      for (uint32_t i = 0; i < info->descriptorSetCount; i++) {
-         uint32_t idx = info->firstSet + i;
-         VK_FROM_HANDLE(mali_descriptor_set, set, info->pDescriptorSets[i]);
-         assert(idx < MALI_MAX_SETS);
-         st->sets[idx] = set;
-         const struct mali_descriptor_set_layout *sl =
-            set ? set->layout :
-                  (layout && layout->set_layouts[idx] ?
-                      mali_descriptor_set_layout(layout->set_layouts[idx]) : NULL);
-         uint32_t count = sl ? sl->dyn_buf_count : 0;
-         for (uint32_t d = 0; d < count; d++) {
-            st->dyn_offsets[idx][d] =
-               dyn < info->dynamicOffsetCount ? info->pDynamicOffsets[dyn] : 0;
-            dyn++;
-         }
-      }
-   }
-}
-
-/* The Vulkan 1.0 entry point, straight to the one above (the runtime's
- * version goes through the dispatch table). */
-VKAPI_ATTR void VKAPI_CALL
-MALI_PER_ARCH(CmdBindDescriptorSets)(VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint,
-                                     VkPipelineLayout layout, uint32_t firstSet,
-                                     uint32_t descriptorSetCount, const VkDescriptorSet *pDescriptorSets,
-                                     uint32_t dynamicOffsetCount, const uint32_t *pDynamicOffsets)
-{
-   const VkBindDescriptorSetsInfoKHR info = {
-      .sType = VK_STRUCTURE_TYPE_BIND_DESCRIPTOR_SETS_INFO_KHR,
-      .stageFlags = vk_shader_stages_from_bind_point(pipelineBindPoint),
-      .layout = layout,
-      .firstSet = firstSet,
-      .descriptorSetCount = descriptorSetCount,
-      .pDescriptorSets = pDescriptorSets,
-      .dynamicOffsetCount = dynamicOffsetCount,
-      .pDynamicOffsets = pDynamicOffsets,
-   };
-   MALI_PER_ARCH(CmdBindDescriptorSets2KHR)(commandBuffer, &info);
-}
-
-VKAPI_ATTR void VKAPI_CALL
-MALI_PER_ARCH(CmdPushConstants2KHR)(VkCommandBuffer commandBuffer,
-                                    const VkPushConstantsInfoKHR *info)
-{
-   VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
-   assert(info->offset + info->size <= sizeof(cmd->push_constants));
-   memcpy(cmd->push_constants + info->offset, info->pValues, info->size);
-   cmd->gfx.draw.dirty |= MALI_GFX_DIRTY_VS_FAU | MALI_GFX_DIRTY_FS_FAU;
 }
