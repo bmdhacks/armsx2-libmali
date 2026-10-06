@@ -209,6 +209,7 @@ c vkCmdNextSubpass2
 c vkCmdNextSubpass2KHR
 c vkCmdPipelineBarrier2
 c vkCmdPipelineBarrier2KHR
+c vkCmdPushDescriptorSetKHR
 c vkCmdPushDescriptorSetWithTemplateKHR
 c vkCmdResetEvent nonnull
 c vkCmdResetEvent2

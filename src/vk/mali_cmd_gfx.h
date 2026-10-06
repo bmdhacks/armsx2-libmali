@@ -31,11 +31,10 @@
 #include "util/list.h"
 
 #include "mali_arch.h"
-#include "mali_descriptor_set_layout.h"
+#include "mali_descriptor_set.h"
 #include "mali_pipeline.h"
 
 struct mali_cmd_buffer;
-struct mali_descriptor_set;
 struct mali_device;
 struct mali_graphics_pipeline;
 struct mali_image;
@@ -64,10 +63,21 @@ struct mali_ptr {
 MALI_PER_ARCH_DECL(struct mali_ptr, cmd_alloc_slow,
                    (struct mali_cmd_buffer *cmd, uint64_t size, uint64_t align));
 
-/* Descriptor sets bound at one bind point, with their dynamic offsets. */
+/*
+ * Descriptor sets bound at one bind point, with their dynamic offsets.
+ *
+ * push[i] is the backing storage of a push descriptor set
+ * (VK_KHR_push_descriptor) at set index i: sets[i] points here while a
+ * push, not a real bound set, is the most recent thing at that index
+ * (mali_cmd_state.c, cmd_push_descriptor_set). The command buffer's reset
+ * zeroes this struct, which clears push[i].layout and so stops a later
+ * push mistaking leftover bytes in reused command-buffer memory for an
+ * earlier push's contents.
+ */
 struct mali_desc_state {
    struct mali_descriptor_set *sets[MALI_MAX_SETS];
    uint32_t dyn_offsets[MALI_MAX_SETS][MALI_MAX_DYNAMIC_BUFFERS];
+   struct mali_descriptor_set push[MALI_MAX_SETS];
 };
 
 /* Layers one Tiler Context covers: 8 on v11, 1 on v9 (Mesa v9, panvk JM

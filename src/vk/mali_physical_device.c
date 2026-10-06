@@ -240,6 +240,11 @@ static const struct vk_device_extension_table mali_device_extensions = {
     * fake a last-vertex convention (up to 3x the vertices) instead of
     * just setting the pipeline's mode. Same hardware bit on both arches. */
    .EXT_provoking_vertex = true,
+
+   /* ARMSX2 pushes its texture set instead of allocating and writing a new
+    * descriptor set per draw; both arches share the same descriptor-set
+    * code (mali_descriptor_set.c), so this needs no per-arch gate. */
+   .KHR_push_descriptor = true,
 };
 
 static struct vk_device_extension_table
@@ -345,6 +350,9 @@ get_features(struct vk_features *f, uint32_t arch)
       /* VK_EXT_device_fault */
       .deviceFaultEXT = true,
       .deviceFaultVendorBinaryEXT = false,
+
+      /* VK_KHR_push_descriptor */
+      .pushDescriptor = true,
    };
 }
 
@@ -531,6 +539,10 @@ get_properties(const struct mali_physical_device *pdev, const char *name,
       .maxUniformBufferRange = 1u << 20,
       .maxPushConstantsSize = 256,
       .maxBoundDescriptorSets = 7,
+
+      /* VK_KHR_push_descriptor. panvk's value; ARMSX2 needs 7 (its TFX
+       * texture set). */
+      .maxPushDescriptors = 32,
       .maxPerStageDescriptorSamplers = 1u << 20,
       .maxPerStageDescriptorUniformBuffers = 1u << 20,
       .maxPerStageDescriptorStorageBuffers = 1u << 20,
