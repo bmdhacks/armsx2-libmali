@@ -215,28 +215,19 @@ static const struct vk_device_extension_table mali_device_extensions = {
     * blob's frame time. Input attachments are tile reads already; with
     * the rasterization-order flags the pipeline turns off forward pixel
     * kill and early depth/stencil updates (mali_pipeline_state.c), as
-    * panvk does on v10+. Not on v9 yet -- see
-    * device_extensions_for_arch() below. */
+    * panvk does on v10+. v9's draw descriptor has no DCD Flags 2 word,
+    * but that word holds tile-buffer read/write masks, which this
+    * extension does not touch; the Flags 0 bits it needs exist on v9
+    * the same as v11, and mali_jm_cmd_draw.c already copies them into
+    * the job. Advertised on both arches. */
    .EXT_rasterization_order_attachment_access = true,
    .ARM_rasterization_order_attachment_access = true,
 };
 
-/*
- * v9 (G57) drops rasterization-order attachment access: the
- * job-manager render-pass encoder has no DCD Flags 2 there, and it
- * is not implemented yet regardless. It stays off even once that
- * lands, until ARMSX2's G57 ROAA rule has an exemption for our
- * driver and a device measurement supports lifting it; we do not
- * touch the ARMSX2 side here.
- */
 static struct vk_device_extension_table
 device_extensions_for_arch(uint32_t arch)
 {
    struct vk_device_extension_table ext = mali_device_extensions;
-   if (arch == 9) {
-      ext.EXT_rasterization_order_attachment_access = false;
-      ext.ARM_rasterization_order_attachment_access = false;
-   }
    return ext;
 }
 
@@ -248,10 +239,6 @@ device_extensions_for_arch(uint32_t arch)
 static void
 get_features(struct vk_features *f, uint32_t arch)
 {
-   /* v9 (G57): rasterization-order attachment access is not advertised
-    * yet (device_extensions_for_arch() above). */
-   const bool roaa = arch != 9;
-
    *f = (struct vk_features) {
       /* Vulkan 1.0 */
       .robustBufferAccess = true,
@@ -294,10 +281,12 @@ get_features(struct vk_features *f, uint32_t arch)
       /* Vulkan 1.1: multiview is required of a 1.1 device. */
       .multiview = true,
 
-      /* VK_EXT_rasterization_order_attachment_access */
-      .rasterizationOrderColorAttachmentAccess = roaa,
-      .rasterizationOrderDepthAttachmentAccess = roaa,
-      .rasterizationOrderStencilAttachmentAccess = roaa,
+      /* VK_EXT_rasterization_order_attachment_access, both arches: the
+       * draw descriptor's Flags 0 word (mali_pipeline_state.c) carries
+       * this on v9 the same as v11. */
+      .rasterizationOrderColorAttachmentAccess = true,
+      .rasterizationOrderDepthAttachmentAccess = true,
+      .rasterizationOrderStencilAttachmentAccess = true,
    };
 }
 

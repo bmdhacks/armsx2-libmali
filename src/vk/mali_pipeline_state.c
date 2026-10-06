@@ -26,7 +26,11 @@
  *    it is cleared, as the blob never sets it and as v11 has it;
  *  - DCD Flags 0 has no conservative rasterization or cull-zero-area,
  *    DCD Flags 1 an 8-bit render target mask, and there is no DCD Flags 2
- *    (dcd2 stays 0);
+ *    (dcd2 stays 0). Flags 2 holds the tile-buffer read/write masks on
+ *    v11, which rasterization-order attachment access does not use
+ *    either way; v9 has no per-render-target mask to narrow tile-read
+ *    ordering against, so it may stall more conservatively there than on
+ *    v11 -- a speed question, not a correctness one;
  *  - the Depth/stencil descriptor has no separated dependency tracking;
  *  - the depth/stencil update may be weak-early (pan_earlyzs.c forces it
  *    early from v11 only).
