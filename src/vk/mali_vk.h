@@ -92,6 +92,15 @@ struct mali_jm_device;
 struct mali_measure;
 struct mali_shader;
 
+/*
+ * Measurement (timing.c, shared by both frontends): has submission seq
+ * completed on jd's queue? Defined in mali_jm_queue.c (v9 only); called
+ * from timing.c only when dev->jm is non-NULL, so the CSF build never
+ * calls it. jd is never dereferenced outside v9 files, so this needs no
+ * frontend-specific type here.
+ */
+bool mali_jm_measure_reached(struct mali_jm_device *jd, uint64_t seq);
+
 /* Internal compute/fragment shaders for copies, fills and blits
  * (mali_cmd_copy.c, mali_cmd_meta_gfx.c). Frontend-neutral: every GPU
  * architecture needs the same internal shaders, compiled on first use and

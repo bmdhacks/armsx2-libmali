@@ -77,6 +77,8 @@
 #include "vk_alloc.h"
 #include "vk_log.h"
 
+#include "mali_measure.h"
+
 /* One JOB_SUBMIT's worth of atoms being built. jc of a soft fence atom
  * points at its fences[] entry, which the kernel reads (and, for
  * FENCE_TRIGGER, writes the new fd into) during the call. */
@@ -303,6 +305,15 @@ MALI_PER_ARCH(queue_reached)(struct mali_device *dev, const uint64_t req[MALI_SY
    return jd->queue->completed_seq >= req[0];
 }
 
+/* Shared with timing.c's completed(), for a mc created by either
+ * frontend (g57-backend.md §12). jd is NULL on a CSF device, in which
+ * case completed() never calls this. */
+bool
+mali_jm_measure_reached(struct mali_jm_device *jd, uint64_t seq)
+{
+   return !jd->queue || jd->queue->completed_seq >= seq;
+}
+
 VkResult
 MALI_PER_ARCH(device_check_status)(struct vk_device *vkdev)
 {
@@ -378,6 +389,13 @@ flush(struct mali_device *dev)
    struct mali_jm_build *b = jd->build;
    if (!b->n)
       return VK_SUCCESS;
+
+   /* LIBMALI_MEASURE's "csf" mode (recorder_jm.c): the atoms of this
+    * JOB_SUBMIT call, before they are handed to the kernel. More than
+    * one call per vkQueueSubmit only happens when atom numbers run out
+    * (g57-backend.md §9.2); the capture accumulates every call's atoms. */
+   if (unlikely(jd->measure_cap))
+      mali_jm_measure_capture_atoms(jd->measure_cap, b->atoms, b->n);
 
    /* The chains were written through write-combined mappings and never
     * read back: make the stores visible before the GPU reads them. */
@@ -919,7 +937,17 @@ MALI_PER_ARCH(queue_submit)(struct vk_queue *vkq, struct vk_queue_submit *submit
       return result;
    }
 
-   mali_jm_build_begin(dev, q->seq + 1);
+   const uint64_t seqno = q->seq + 1;
+
+   /* Measurement: queue the command buffers' timed regions for reading,
+    * and capture this submit's atoms and command memory if asked to
+    * (g57-backend.md §12). */
+   if (unlikely(dev->measure)) {
+      mali_jm_measure_submit(dev, submit, seqno);
+      jd->measure_cap = mali_jm_measure_capture_begin(dev, submit, seqno);
+   }
+
+   mali_jm_build_begin(dev, seqno);
    result = build_submit(dev, submit);
    mali_jm_ref tracker = 0;
    bool built = false;
@@ -927,6 +955,11 @@ MALI_PER_ARCH(queue_submit)(struct vk_queue *vkq, struct vk_queue_submit *submit
       result = mali_jm_build_end(dev, true, &tracker, &built, NULL);
    else
       mali_jm_build_abort(dev);
+
+   if (unlikely(jd->measure_cap)) {
+      mali_jm_measure_capture_end(dev, jd->measure_cap);
+      jd->measure_cap = NULL;
+   }
 
    if (result == VK_SUCCESS) {
       if (built) {

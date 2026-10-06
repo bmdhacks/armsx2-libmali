@@ -201,8 +201,15 @@ libmali_vk_v11 = static_library(
 libmali_vk_v9 = static_library(
   'mali_vk_v9',
   files('vk/mali_jm_cmd_buffer.c', 'vk/mali_jm_cmd_dispatch.c', 'vk/mali_jm_cmd_draw.c',
-        'vk/mali_jm_cmd_render.c', 'vk/mali_jm_heap.c', 'vk/mali_jm_queue.c',
-        'vk/mali_jm_sync_file.c', 'vk/mali_sync.c', 'vk/mali_wsi.c'),
+        'vk/mali_jm_cmd_render.c', 'vk/mali_jm_heap.c', 'vk/mali_jm_query.c',
+        'vk/mali_jm_queue.c', 'vk/mali_jm_sync_file.c', 'vk/mali_sync.c', 'vk/mali_wsi.c'),
+  # Timing and command-stream capture on the job manager (LIBMALI_MEASURE):
+  # their own implementation of what touches struct mali_cmd_buffer
+  # directly, because that struct (mali_jm.h) differs from the CSF one
+  # timing.c/recorder.c are compiled against; the device-level
+  # configuration, output writers and mali_measure_harvest/collect in those
+  # two files (built once, in libmali_vk) are shared.
+  files('measurement/timing_jm.c', 'measurement/recorder_jm.c'),
   _vk_per_arch_files,
   mali_entrypoints[0],   # the header only; the tables are libmali_vk's
   include_directories : _vk_inc,

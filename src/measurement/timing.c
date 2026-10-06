@@ -59,8 +59,8 @@ mali_measure_cmd_create(struct mali_cmd_buffer *cmd)
 }
 
 /* With m->lock held. */
-static void
-harvest(struct mali_measure *m, struct mali_measure_cmd *mc)
+void
+mali_measure_harvest(struct mali_measure *m, struct mali_measure_cmd *mc)
 {
    if (mc->active) {
       util_dynarray_foreach(&mc->regions, struct mali_measure_region, r)
@@ -71,9 +71,20 @@ harvest(struct mali_measure *m, struct mali_measure_cmd *mc)
    mc->pending = false;
 }
 
+/*
+ * completed(): has every region mc holds finished on the device? dev->jm
+ * (non-NULL only on a job-manager device) asks the JM queue's completed
+ * submission counter (mali_jm_measure_reached, mali_jm_queue.c -- jd is
+ * only ever passed back to it, never dereferenced here, so this needs no
+ * job-manager type); a CSF device (dev->csf) checks the subqueues'
+ * sync-object "done" slots mc->sq_mask names, as before. Neither path
+ * touches cmd, so this is safe for a mc created by either frontend.
+ */
 static bool
 completed(struct mali_measure *m, const struct mali_measure_cmd *mc)
 {
+   if (m->dev->jm)
+      return mali_jm_measure_reached(m->dev->jm, mc->submit);
    struct mali_csf_queue *q = m->dev->csf ? m->dev->csf->queue : NULL;
    if (!q)
       return true;
@@ -90,7 +101,7 @@ mali_measure_collect(struct mali_measure *m, bool force)
 {
    list_for_each_entry_safe(struct mali_measure_cmd, mc, &m->pending, link) {
       if (force || completed(m, mc))
-         harvest(m, mc);
+         mali_measure_harvest(m, mc);
    }
    if (m->timing)
       fflush(m->timing);
@@ -104,7 +115,7 @@ cmd_clear(struct mali_cmd_buffer *cmd)
 
    pthread_mutex_lock(&m->lock);
    if (mc->pending)
-      harvest(m, mc);
+      mali_measure_harvest(m, mc);
    pthread_mutex_unlock(&m->lock);
 
    util_dynarray_clear(&mc->regions);
@@ -154,6 +165,17 @@ emit_timestamp(struct mali_cmd_buffer *cmd, enum mali_subqueue sq, uint64_t va, 
    cs_store_state(b, addr, 0, MALI_CS_STATE_TIMESTAMP, op);
 }
 
+/*
+ * cmd->measure's region allocation is specific to this file's (CSF,
+ * v11-fixed) struct mali_cmd_buffer layout and mali_cmd_alloc(): the
+ * job-manager back half has its own copy of this logic in timing_jm.c
+ * against its own struct mali_cmd_buffer (mali_jm.h), because a function
+ * compiled once here would read cmd->measure, and call mali_cmd_alloc(),
+ * at this file's (v11) offsets and definition even when handed a v9 cmd
+ * pointer. Only mali_measure_harvest and completed() are shared (above):
+ * they never touch cmd, only the frontend-neutral struct mali_measure_cmd
+ * a cmd->measure already points at.
+ */
 uint32_t
 mali_measure_begin(struct mali_cmd_buffer *cmd, enum mali_measure_kind kind,
                    enum mali_subqueue sq, uint32_t index)
@@ -255,7 +277,7 @@ mali_measure_submit(struct mali_device *dev, struct mali_queue *queue,
          /* Submitted again before its last results were read: read them
           * if they are there, else they are lost. */
          if (completed(m, mc)) {
-            harvest(m, mc);
+            mali_measure_harvest(m, mc);
          } else {
             m->dropped++;
             list_del(&mc->link);

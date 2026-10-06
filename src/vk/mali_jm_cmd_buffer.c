@@ -68,6 +68,8 @@
 #include "vk_log.h"
 #include "vk_synchronization.h"
 
+#include "mali_measure.h"
+
 /* ---------------------------------------------------------------------- */
 /* Memory                                                                  */
 
@@ -722,6 +724,9 @@ MALI_PER_ARCH(EndCommandBuffer)(VkCommandBuffer commandBuffer)
 static void
 cmd_clear(struct mali_cmd_buffer *cmd)
 {
+   /* Timestamps live in command memory (below, release_memory): read them
+    * before it goes. */
+   mali_jm_measure_cmd_reset(cmd);
    util_dynarray_clear(&cmd->jm.batches);
    util_dynarray_clear(&cmd->jm.frags);
    util_dynarray_clear(&cmd->jm.resets);
@@ -766,6 +771,7 @@ cmd_create(struct vk_command_pool *pool, VkCommandBufferLevel level,
    cmd->vk.dynamic_graphics_state.vi = &cmd->dyn_vi;
    cmd->vk.dynamic_graphics_state.ms.sample_locations = &cmd->dyn_sl;
    cmd->gfx.draw.dirty = MALI_GFX_DIRTY_ALL;
+   mali_jm_measure_cmd_create(cmd);
    *out = &cmd->vk;
    return VK_SUCCESS;
 }
@@ -782,6 +788,7 @@ static void
 cmd_destroy(struct vk_command_buffer *vk_cmd)
 {
    struct mali_cmd_buffer *cmd = container_of(vk_cmd, struct mali_cmd_buffer, vk);
+   mali_jm_measure_cmd_destroy(cmd);
    release_memory(cmd);
    util_dynarray_fini(&cmd->jm.batches);
    util_dynarray_fini(&cmd->jm.frags);

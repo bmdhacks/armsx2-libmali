@@ -202,6 +202,70 @@ void mali_measure_info(struct mali_cmd_buffer *cmd, uint32_t handle, uint32_t a,
 void mali_measure_shader(struct mali_cmd_buffer *cmd, uint32_t handle, uint64_t key);
 void mali_measure_extra(struct mali_cmd_buffer *cmd, uint32_t handle, uint32_t extra);
 
+/* Read mc's rows (if its submit's output window was active) and take it
+ * off m->pending. With m->lock held. Shared with the job-manager
+ * (v9) submit path (timing_jm.c), which must harvest only the one
+ * command buffer being reset or destroyed, not the whole pending list
+ * (mali_measure_collect(m, true) would read other command buffers'
+ * regions before their GPU writes land). Safe to share: it touches only
+ * m, mc and mc->regions (struct mali_measure_cmd/mali_measure_region are
+ * frontend-neutral), never cmd. */
+void mali_measure_harvest(struct mali_measure *m, struct mali_measure_cmd *mc);
+
+#if defined(PAN_ARCH) && PAN_ARCH == 9
+struct mali_jm_chain;
+
+/*
+ * The job-manager (v9) regions (g57-backend.md §12, timing_jm.c): a
+ * System Timestamp Write Value job into chain now (barriered, so it
+ * waits for every earlier job of the chain -- the same exclusive
+ * attribution the CSF design chose by deferring its STORE_STATE). These
+ * are a separate implementation from mali_measure_begin/end/info/shader
+ * above, not a frontend dispatch over them: those are compiled once, at
+ * this build's fixed CSF (v11) struct mali_cmd_buffer layout and
+ * mali_cmd_alloc(), so calling them with a v9 cmd pointer would read
+ * cmd->measure (and allocate command memory) at the wrong offsets.
+ * slot is MALI_JM_SLOT_VTC or _FRAG, only for the CSV row's subqueue
+ * column; chain is the job chain the caller already holds (the open
+ * batch's vtc chain, or the open fragment segment from
+ * mali_jm_cmd_frag/mali_jm_cmd_pass_vtc). mali_jm_measure_end takes the
+ * same chain again to place the end timestamp after whatever the caller
+ * recorded since begin.
+ */
+uint32_t mali_jm_measure_begin(struct mali_cmd_buffer *cmd, enum mali_measure_kind kind,
+                               struct mali_jm_chain *chain, uint8_t slot, uint32_t index);
+void mali_jm_measure_end(struct mali_cmd_buffer *cmd, uint32_t handle,
+                         struct mali_jm_chain *chain);
+void mali_jm_measure_info(struct mali_cmd_buffer *cmd, uint32_t handle, uint32_t a,
+                          uint32_t b, uint32_t c, uint32_t d);
+void mali_jm_measure_shader(struct mali_cmd_buffer *cmd, uint32_t handle, uint64_t key);
+
+void mali_jm_measure_cmd_create(struct mali_cmd_buffer *cmd);
+void mali_jm_measure_cmd_reset(struct mali_cmd_buffer *cmd);
+void mali_jm_measure_cmd_destroy(struct mali_cmd_buffer *cmd);
+
+/* From mali_v9_queue_submit, once the submission number is known:
+ * mirrors mali_measure_submit (queues the command buffers' regions for
+ * reading) and mali_measure_capture_begin (a capture of the atoms and
+ * command memory this submit builds, recorder_jm.c), but over the atom
+ * graph instead of CSF rings. */
+void mali_jm_measure_submit(struct mali_device *dev, struct vk_queue_submit *submit,
+                            uint64_t seqno);
+
+struct mali_jm_measure_capture;
+struct mali_jm_measure_capture *
+mali_jm_measure_capture_begin(struct mali_device *dev, struct vk_queue_submit *submit,
+                              uint64_t seqno);
+/* The atoms of one JOB_SUBMIT call of this capture's build (mali_jm_queue.c's
+ * flush(), which may run more than once per vkQueueSubmit). */
+struct kb_jm_atom;
+void mali_jm_measure_capture_atoms(struct mali_jm_measure_capture *cap,
+                                   const struct kb_jm_atom *atoms, unsigned n);
+/* Writes jm-SSSSSSSS.bin (before the atoms it captured can run further,
+ * so command memory is as recorded) and frees cap. cap may be NULL. */
+void mali_jm_measure_capture_end(struct mali_device *dev, struct mali_jm_measure_capture *cap);
+#endif
+
 /* ---------------------------------------------------------------------- */
 /* Submit (timing.c, recorder.c)                                           */
 

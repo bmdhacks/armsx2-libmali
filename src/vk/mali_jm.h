@@ -61,6 +61,9 @@
 #include "mali_shader.h"
 #include "mali_vk.h"
 
+struct mali_measure_cmd;
+struct mali_jm_measure_capture;
+
 /* Job slots (kbase_js_get_slot): fragment work runs on slot 0, everything
  * else we submit on slot 1. */
 #define MALI_JM_SLOT_FRAG  0
@@ -200,6 +203,10 @@ struct mali_jm_cmd {
    uint64_t last_seq;            /* the submission that ran it last */
    struct util_dynarray resets;  /* struct mali_jm_reset */
    struct util_dynarray reset_data;
+
+   /* Timing regions (measurement/timing_jm.c); NULL unless
+    * LIBMALI_MEASURE's "timing" mode is on. */
+   struct mali_measure_cmd *measure;
 };
 
 /*
@@ -561,6 +568,12 @@ struct mali_jm_device {
 
    /* Atoms of the JOB_SUBMIT being built (only while building). */
    struct mali_jm_build *build;
+
+   /* Set for the duration of one vkQueueSubmit when LIBMALI_MEASURE's
+    * "csf" mode is on (recorder_jm.c calls it "csf" too: one capture
+    * knob, g57-backend.md §12); flush() (mali_jm_queue.c) appends every
+    * JOB_SUBMIT call's atoms to it. */
+   struct mali_jm_measure_capture *measure_cap;
 
    struct {
       uint64_t atoms, job_submits, events, joins, partial_flushes, number_waits;

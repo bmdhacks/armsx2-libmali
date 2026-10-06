@@ -65,6 +65,8 @@
 
 #include "vk_log.h"
 
+#include "mali_measure.h"
+
 #if PAN_ARCH != 9
 #error "mali_jm_cmd_render.c is the v9 (job manager) back half"
 #endif
@@ -170,6 +172,14 @@ MALI_PER_ARCH(cmd_render_tiler)(struct mali_cmd_buffer *cmd)
    r->tiler_cpu = p.cpu;
    r->td_count = layers;
    b->est_heap_bytes += MALI_JM_HEAP_PASS_EST;
+
+   /* Timing: the vertex/tiler side of the pass starts here, a System
+    * Timestamp Write Value job in the batch's vtc chain (the same chain
+    * the pass's draws go into, mali_jm_cmd_pass_vtc). */
+   if (unlikely(cmd->jm.measure))
+      r->measure_vt =
+         mali_jm_measure_begin(cmd, MALI_MEASURE_PASS_VT, &b->vtc, MALI_JM_SLOT_VTC,
+                               cmd->passes - 1);
 
    cmd->gfx.draw.dirty |= MALI_GFX_DIRTY_PASS;
    return true;
@@ -287,12 +297,21 @@ MALI_PER_ARCH(cmd_fb_barrier)(struct mali_cmd_buffer *cmd)
 /* One Fragment job per layer: bounding box in 16-pixel tiles (Mesa
  * pan_emit_fragment_job_payload), the layer's FBD pointer, tagged. */
 static void
-fragment_jobs(struct mali_cmd_buffer *cmd, const struct mali_render_state *r, uint64_t fbds,
+fragment_jobs(struct mali_cmd_buffer *cmd, struct mali_render_state *r, uint64_t fbds,
               uint32_t fbd_size)
 {
    struct mali_jm_chain *c = mali_jm_cmd_frag(cmd, false);
    if (!c)
       return;
+
+   /* Timing: the fragment side, from here (the current fragment segment,
+    * not forced new -- a timed pass that preloads through a pending
+    * barrier still gets that barrier on its first job below) to the end
+    * of this pass's fragment jobs. */
+   if (unlikely(cmd->jm.measure))
+      r->measure_frag =
+         mali_jm_measure_begin(cmd, MALI_MEASURE_PASS_FRAG, c, MALI_JM_SLOT_FRAG,
+                               cmd->passes - 1);
 
    uint8_t tmpl[128] __attribute__((aligned(16)));
    memset(tmpl, 0, sizeof(tmpl));
@@ -307,10 +326,15 @@ fragment_jobs(struct mali_cmd_buffer *cmd, const struct mali_render_state *r, ui
       }
       struct mali_ptr job =
          mali_jm_cmd_add_job(cmd, c, MALI_JOB_TYPE_FRAGMENT, sizeof(tmpl), false, 0);
-      if (!job.cpu)
+      if (!job.cpu) {
+         if (unlikely(r->measure_frag))
+            mali_jm_measure_end(cmd, r->measure_frag, c);
          return;
+      }
       memcpy((uint8_t *)job.cpu + 32, tmpl + 32, sizeof(tmpl) - 32);
    }
+   if (unlikely(r->measure_frag))
+      mali_jm_measure_end(cmd, r->measure_frag, c);
 }
 
 void
@@ -333,9 +357,17 @@ MALI_PER_ARCH(cmd_render_end)(struct mali_cmd_buffer *cmd)
           * first pointer holds for all. */
          assert(fbd_size % 64 == 0);
          MALI_PER_ARCH(fb_fill_tsd)(cmd, r);
+         if (unlikely(r->measure_vt))
+            mali_jm_measure_end(cmd, r->measure_vt, &cmd->jm.cur.vtc);
          fragment_jobs(cmd, r, fbds, fbd_size);
          cmd->jm.cur.passes++;
       }
+   }
+
+   if (unlikely(cmd->jm.measure)) {
+      const uint32_t w = r->desc.width, h = r->desc.height;
+      mali_jm_measure_info(cmd, r->measure_vt, w, h, r->desc.rt_count, r->draws);
+      mali_jm_measure_info(cmd, r->measure_frag, w, h, r->desc.rt_count, r->draws);
    }
 
    r->active = false;

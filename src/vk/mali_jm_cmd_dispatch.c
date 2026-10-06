@@ -27,6 +27,8 @@
 
 #include "mali_cmd_state.h"
 
+#include "mali_measure.h"
+
 static void
 dispatch(struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
          const struct mali_desc_state *desc, const void *push, uint32_t push_size,
@@ -53,10 +55,26 @@ dispatch(struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
    struct mali_jm_chain *c = xfer ? mali_jm_cmd_vtc_transfer(cmd) : mali_jm_cmd_vtc(cmd);
    if (!c)
       return;
+
+   /* Timing. */
+   uint32_t mh = 0;
+   if (unlikely(cmd->jm.measure)) {
+      mh = mali_jm_measure_begin(cmd, MALI_MEASURE_DISPATCH, c, MALI_JM_SLOT_VTC,
+                                 cmd->dispatches);
+      uint64_t key;
+      memcpy(&key, cs->key, sizeof(key));
+      mali_jm_measure_info(cmd, mh, groups[0], groups[1], groups[2],
+                          cs->cs.local_size[0] * cs->cs.local_size[1] * cs->cs.local_size[2]);
+      mali_jm_measure_shader(cmd, mh, key);
+   }
+
    struct mali_ptr job =
       mali_jm_cmd_add_job(cmd, c, MALI_JOB_TYPE_COMPUTE, pan_size(COMPUTE_JOB), false, 0);
-   if (!job.cpu)
+   if (!job.cpu) {
+      if (unlikely(mh))
+         mali_jm_measure_end(cmd, mh, c);
       return;
+   }
 
    pan_section_pack(job.cpu, COMPUTE_JOB, PAYLOAD, cfg) {
       cfg.workgroup_size_x = cs->cs.local_size[0];
@@ -76,6 +94,8 @@ dispatch(struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
       cfg.compute.fau_count = fau >> 56;
    }
    cmd->dispatches++;
+   if (unlikely(mh))
+      mali_jm_measure_end(cmd, mh, c);
 }
 
 void

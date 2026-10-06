@@ -382,6 +382,17 @@ static const char *const sq_names[MALI_SUBQUEUE_COUNT] = {
    [MALI_SUBQUEUE_COMPUTE] = "compute",
 };
 
+/*
+ * A job-manager region's mali_measure_region::sq is MALI_JM_SLOT_FRAG
+ * (0) or MALI_JM_SLOT_VTC (1) (mali_jm.h), not an enum mali_subqueue
+ * value, and the design calls for "vtc"/"frag" on JM (g57-backend.md
+ * §12) rather than the CSF names above. This file builds once, at this
+ * build's fixed v11 MALI_PAN_ARCH, so it cannot include the v9-only
+ * mali_jm.h; the two slot values are repeated here as plain indices
+ * instead.
+ */
+static const char *const jm_sq_names[2] = {"frag", "vtc"};
+
 static uint64_t
 ticks_to_mono(const struct mali_measure *m, uint64_t ticks)
 {
@@ -423,6 +434,8 @@ mali_measure_row(struct mali_measure *m, const struct mali_measure_cmd *mc,
       break;
    }
 
+   const char *sq_name = m->dev->jm ? jm_sq_names[r->sq] : sq_names[r->sq];
+
    if (b && e) {
       /* The two deferred stores of a region with (almost) no work of its
        * own can complete in either order; seen on the device as an end a
@@ -436,12 +449,12 @@ mali_measure_row(struct mali_measure *m, const struct mali_measure_cmd *mc,
       const uint64_t bn = ticks_to_mono(m, b), en = ticks_to_mono(m, e);
       fprintf(m->timing, "%" PRIu64 ",%u,%s,%s,%u,%" PRIu64 ",%" PRIu64 ",%" PRIu64
                          ",%" PRIu64 ",%" PRIu64 ",%s%s\n",
-              mc->submit, mc->submit_pos, sq_names[r->sq], kind_names[r->kind],
+              mc->submit, mc->submit_pos, sq_name, kind_names[r->kind],
               r->index, b, r->slot[1], bn, en, en - bn, reordered ? "reordered " : "", info);
    } else {
       /* Not written (the submit failed, or the device was lost). */
       fprintf(m->timing, "%" PRIu64 ",%u,%s,%s,%u,%" PRIu64 ",%" PRIu64 ",,,,missing %s\n",
-              mc->submit, mc->submit_pos, sq_names[r->sq], kind_names[r->kind],
+              mc->submit, mc->submit_pos, sq_name, kind_names[r->kind],
               r->index, b, e, info);
       m->rows_missing++;
    }
