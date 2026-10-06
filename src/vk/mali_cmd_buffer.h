@@ -36,7 +36,6 @@
 #include "mali_descriptor_set_layout.h"
 #include "mali_shader.h"
 
-struct mali_csf_device;
 struct mali_descriptor_set;
 struct mali_device;
 struct vk_pipeline;
@@ -229,7 +228,7 @@ mali_cmd_alloc(struct mali_cmd_buffer *cmd, uint64_t size, uint64_t align)
 }
 
 /* Frees the device's cached slabs. */
-void mali_cmd_slabs_finish(struct mali_csf_device *csf);
+void mali_cmd_slabs_finish(struct mali_device *dev);
 
 /* vkCmdBindPipeline, from mali_pipeline_cmd_bind. */
 void mali_cmd_bind_pipeline(struct mali_cmd_buffer *cmd, struct vk_pipeline *pipeline);

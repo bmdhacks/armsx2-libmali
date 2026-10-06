@@ -129,10 +129,9 @@ static const struct mali_shader *
 get_meta(struct mali_cmd_buffer *cmd, enum mali_meta_shader m)
 {
    struct mali_device *dev = cmd->dev;
-   struct mali_csf_device *csf = dev->csf;
 
-   simple_mtx_lock(&csf->meta_lock);
-   struct mali_shader *s = csf->meta[m];
+   simple_mtx_lock(&dev->meta_lock);
+   struct mali_shader *s = dev->meta[m];
    if (!s) {
       nir_shader *nir = build_meta_nir(dev, m);
       mali_shader_preprocess(dev, nir);
@@ -157,9 +156,9 @@ get_meta(struct mali_cmd_buffer *cmd, enum mali_meta_shader m)
       VkResult r = mali_shader_compile(dev, &info, key, &s);
       if (r != VK_SUCCESS)
          s = NULL;
-      csf->meta[m] = s;
+      dev->meta[m] = s;
    }
-   simple_mtx_unlock(&csf->meta_lock);
+   simple_mtx_unlock(&dev->meta_lock);
 
    if (!s)
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -169,10 +168,9 @@ get_meta(struct mali_cmd_buffer *cmd, enum mali_meta_shader m)
 void
 mali_meta_finish(struct mali_device *dev)
 {
-   struct mali_csf_device *csf = dev->csf;
    for (unsigned i = 0; i < MALI_META_COUNT; i++) {
-      mali_shader_unref(dev, csf->meta[i]);
-      csf->meta[i] = NULL;
+      mali_shader_unref(dev, dev->meta[i]);
+      dev->meta[i] = NULL;
    }
    mali_meta_gfx_finish(dev);
    mali_blend_shaders_finish(dev);

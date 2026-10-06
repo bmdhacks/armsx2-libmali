@@ -11,6 +11,8 @@
 
 #include "mali_vk.h"
 
+#include <time.h>
+
 #include "vk_alloc.h"
 #include "vk_util.h"
 
@@ -20,6 +22,41 @@
 #include "mali_waist.h"
 #include "mali_compiler.h"
 #include "vk_pipeline_cache.h"
+
+/*
+ * Device state every frontend needs alike (design doc §2.3): the
+ * command-buffer slab cache, internal shader caches, and the sync-object
+ * lock, condition and device-loss state. Set up before the frontend's own
+ * device-init (mali_csf_device_init today; a JM equivalent later) so that
+ * state exists under either frontend, and torn down after it, since
+ * nothing here depends on dev->csf.
+ */
+static void
+device_fe_state_init(struct mali_device *dev)
+{
+   simple_mtx_init(&dev->slab_lock, mtx_plain);
+   list_inithead(&dev->free_slabs);
+   simple_mtx_init(&dev->meta_lock, mtx_plain);
+
+   pthread_condattr_t ca;
+   pthread_condattr_init(&ca);
+   pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
+   pthread_cond_init(&dev->cond, &ca);
+   pthread_condattr_destroy(&ca);
+   pthread_mutex_init(&dev->lock, NULL);
+}
+
+static void
+device_fe_state_finish(struct mali_device *dev)
+{
+   mali_meta_finish(dev);
+   mali_cmd_slabs_finish(dev);
+
+   pthread_cond_destroy(&dev->cond);
+   pthread_mutex_destroy(&dev->lock);
+   simple_mtx_destroy(&dev->meta_lock);
+   simple_mtx_destroy(&dev->slab_lock);
+}
 
 static VkResult
 queue_init(struct mali_device *dev, struct mali_queue *queue,
@@ -52,9 +89,12 @@ device_destroy(struct mali_device *dev, const VkAllocationCallbacks *alloc)
    mali_measure_finish(dev);
    for (uint32_t i = 0; i < dev->queue_count; i++)
       queue_finish(dev, &dev->queues[i]);
-   /* Command-stream state: event thread, command memory, internal
-    * shaders (their code lives in the pools below). */
+   /* Command-stream state: event thread (CSF-specific; mali_csf_device
+    * itself). */
    mali_csf_device_finish(dev);
+   /* Frontend-neutral device state: command memory, internal shaders
+    * (their code lives in the pools below), the sync lock/condition. */
+   device_fe_state_finish(dev);
    /* The cache holds shaders, which live in the pools. */
    if (dev->vk.mem_cache)
       vk_pipeline_cache_destroy(dev->vk.mem_cache, NULL);
@@ -156,6 +196,10 @@ mali_CreateDevice(VkPhysicalDevice physicalDevice,
    mali_bo_pool_init_exec(&dev->exec_pool, dev->kbase);
    mali_bo_pool_init_desc(&dev->desc_pool, dev->kbase);
    mali_device_keys_init(dev);
+   /* Frontend-neutral device state (design doc §2.3): every path below
+    * this point that can fail calls device_destroy, which tears this down
+    * again, so it must exist before the first of them. */
+   device_fe_state_init(dev);
    if (mali_compiler_init(pdev->props.gpu_id) != MALI_COMPILE_OK) {
       result = vk_errorf(pdev, VK_ERROR_INITIALIZATION_FAILED,
                          "the shader compiler is not configured for kraid");

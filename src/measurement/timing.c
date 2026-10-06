@@ -234,7 +234,7 @@ mali_measure_shader(struct mali_cmd_buffer *cmd, uint32_t handle, uint64_t key)
 }
 
 void
-mali_measure_submit(struct mali_device *dev, struct mali_csf_queue *q,
+mali_measure_submit(struct mali_device *dev, struct mali_queue *queue,
                     struct vk_queue_submit *submit, uint64_t seqno)
 {
    struct mali_measure *m = dev->measure;

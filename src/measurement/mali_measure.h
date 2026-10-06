@@ -40,8 +40,8 @@
 #include "mali_cs.h"
 
 struct mali_cmd_buffer;
-struct mali_csf_queue;
 struct mali_device;
+struct mali_queue;
 struct vk_queue_submit;
 
 /* ---------------------------------------------------------------------- */
@@ -198,10 +198,15 @@ void mali_measure_extra(struct mali_cmd_buffer *cmd, uint32_t handle, uint32_t e
 /* ---------------------------------------------------------------------- */
 /* Submit (timing.c, recorder.c)                                           */
 
-/* From mali_queue_submit once the submit number is known and before its
+/*
+ * From mali_queue_submit once the submit number is known and before its
  * words go into the rings: reads earlier submits that have completed and
- * queues this submit's command buffers for reading. */
-void mali_measure_submit(struct mali_device *dev, struct mali_csf_queue *q,
+ * queues this submit's command buffers for reading. Takes the
+ * frontend-neutral mali_queue (not the CSF-typed mali_csf_queue) so this
+ * declaration serves any frontend's submit path alike; today's body
+ * (timing.c) is CSF-only and reaches the CSF queue through queue->csf.
+ */
+void mali_measure_submit(struct mali_device *dev, struct mali_queue *queue,
                          struct vk_queue_submit *submit, uint64_t seqno);
 
 struct mali_measure_capture;
@@ -209,7 +214,7 @@ struct mali_measure_capture;
 /* A capture of this submit, or NULL (off, outside the window, or the
  * limit reached). */
 struct mali_measure_capture *
-mali_measure_capture_begin(struct mali_device *dev, struct mali_csf_queue *q,
+mali_measure_capture_begin(struct mali_device *dev, struct mali_queue *queue,
                            struct vk_queue_submit *submit, uint64_t seqno);
 /* Words the submit writes into subqueue sq's ring. */
 void mali_measure_capture_ring(struct mali_measure_capture *cap, unsigned sq,

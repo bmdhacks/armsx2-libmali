@@ -86,7 +86,7 @@ struct mali_measure_capture {
 };
 
 struct mali_measure_capture *
-mali_measure_capture_begin(struct mali_device *dev, struct mali_csf_queue *q,
+mali_measure_capture_begin(struct mali_device *dev, struct mali_queue *queue,
                            struct vk_queue_submit *submit, uint64_t seqno)
 {
    struct mali_measure *m = dev->measure;
@@ -106,7 +106,7 @@ mali_measure_capture_begin(struct mali_device *dev, struct mali_csf_queue *q,
    if (!cap)
       return NULL;
    cap->seqno = seqno;
-   cap->q = q;
+   cap->q = queue->csf;
    cap->submit = submit;
    for (unsigned i = 0; i < MALI_SUBQUEUE_COUNT; i++)
       util_dynarray_init(&cap->ring[i], NULL);

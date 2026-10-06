@@ -16,6 +16,14 @@
  * fence): the sync owns a dup of the fd. Host waits poll it; GPU waits go
  * through the kcpu queue (mali_sync_file.c, mali_queue.c). Export makes a
  * sync file for whatever the payload is.
+ *
+ * This file is mostly frontend-neutral: the lock, condition and
+ * device-loss state it uses live on struct mali_device, not the CSF
+ * device (design doc §2.3). The handful of operations that genuinely
+ * differ per frontend (has a submit's work been reached, noticing a fault
+ * before the next event, sync-file import/export) go through the
+ * MALI_PER_ARCH() hooks declared in mali_queue.h; only today's v11 (CSF)
+ * bodies exist.
  */
 
 #include "mali_queue.h"
@@ -37,10 +45,10 @@ to_sync(struct vk_sync *s)
    return container_of(s, struct mali_sync, vk);
 }
 
-static struct mali_csf_device *
-csf_of(struct vk_device *vkdev)
+static struct mali_device *
+dev_of(struct vk_device *vkdev)
 {
-   return container_of(vkdev, struct mali_device, vk)->csf;
+   return container_of(vkdev, struct mali_device, vk);
 }
 
 void
@@ -77,33 +85,33 @@ sync_finish(struct vk_device *vkdev, struct vk_sync *vs)
 static VkResult
 sync_signal(struct vk_device *vkdev, struct vk_sync *vs, uint64_t value)
 {
-   struct mali_csf_device *csf = csf_of(vkdev);
+   struct mali_device *dev = dev_of(vkdev);
    struct mali_sync *s = to_sync(vs);
-   pthread_mutex_lock(&csf->lock);
+   pthread_mutex_lock(&dev->lock);
    mali_sync_clear(s);
    s->host_signaled = true;
-   pthread_cond_broadcast(&csf->cond);
-   pthread_mutex_unlock(&csf->lock);
+   pthread_cond_broadcast(&dev->cond);
+   pthread_mutex_unlock(&dev->lock);
    return VK_SUCCESS;
 }
 
 static VkResult
 sync_reset(struct vk_device *vkdev, struct vk_sync *vs)
 {
-   struct mali_csf_device *csf = csf_of(vkdev);
+   struct mali_device *dev = dev_of(vkdev);
    struct mali_sync *s = to_sync(vs);
-   pthread_mutex_lock(&csf->lock);
+   pthread_mutex_lock(&dev->lock);
    mali_sync_clear(s);
-   pthread_mutex_unlock(&csf->lock);
+   pthread_mutex_unlock(&dev->lock);
    return VK_SUCCESS;
 }
 
 static VkResult
 sync_move(struct vk_device *vkdev, struct vk_sync *dst, struct vk_sync *src)
 {
-   struct mali_csf_device *csf = csf_of(vkdev);
+   struct mali_device *dev = dev_of(vkdev);
    struct mali_sync *d = to_sync(dst), *s = to_sync(src);
-   pthread_mutex_lock(&csf->lock);
+   pthread_mutex_lock(&dev->lock);
    mali_sync_clear(d);
    d->host_signaled = s->host_signaled;
    d->submitted = s->submitted;
@@ -111,14 +119,14 @@ sync_move(struct vk_device *vkdev, struct vk_sync *dst, struct vk_sync *src)
    d->fd = s->fd;
    s->fd = -1;
    mali_sync_clear(s);
-   pthread_mutex_unlock(&csf->lock);
+   pthread_mutex_unlock(&dev->lock);
    return VK_SUCCESS;
 }
 
-/* With csf->lock held. A sync file found signalled becomes a host
+/* With dev->lock held. A sync file found signalled becomes a host
  * signal (its fd is closed). */
 static bool
-sync_is_signaled(struct mali_csf_device *csf, struct mali_sync *s, bool pending)
+sync_is_signaled(struct mali_device *dev, struct mali_sync *s, bool pending)
 {
    if (s->host_signaled)
       return true;
@@ -134,7 +142,7 @@ sync_is_signaled(struct mali_csf_device *csf, struct mali_sync *s, bool pending)
    if (!s->submitted)
       return false;
    /* In immediate submit mode a submitted signal is already "pending". */
-   return pending || mali_csf_reached(csf, s->req);
+   return pending || MALI_PER_ARCH(queue_reached)(dev, s->req);
 }
 
 /* Without kernel events a sleeping wait re-reads the done slots this
@@ -147,32 +155,31 @@ sync_wait_many(struct vk_device *vkdev, uint32_t count,
                const struct vk_sync_wait *waits, enum vk_sync_wait_flags flags,
                uint64_t abs_timeout_ns)
 {
-   struct mali_csf_device *csf = csf_of(vkdev);
+   struct mali_device *dev = dev_of(vkdev);
    const bool any = flags & VK_SYNC_WAIT_ANY;
    const bool pending = flags & VK_SYNC_WAIT_PENDING;
-   const int64_t slice = csf->thread_running ? WAIT_SLICE_EVENTS_NS : WAIT_SLICE_NO_EVENTS_NS;
+   /* Whether a background notifier exists to broadcast dev->cond on its
+    * own (CSF's event thread; JM's on-demand reader has no equivalent
+    * yet) decides only how long a sleep waits between re-checks. */
+   const bool has_notifier = dev->csf && dev->csf->thread_running;
+   const int64_t slice = has_notifier ? WAIT_SLICE_EVENTS_NS : WAIT_SLICE_NO_EVENTS_NS;
    VkResult result;
    bool slept = false;
 
-   pthread_mutex_lock(&csf->lock);
+   pthread_mutex_lock(&dev->lock);
    for (;;) {
-      if (csf->lost) {
+      if (dev->lost) {
          result = VK_ERROR_DEVICE_LOST;
          break;
       }
 
-      /* A faulted stream shows up in the done slots' error words. */
-      struct mali_csf_queue *q = csf->queue;
-      if (q) {
-         volatile struct mali_cs_sync64 *done = mali_queue_done(q);
-         bool error = false;
-         for (unsigned i = 0; i < MALI_SUBQUEUE_COUNT; i++)
-            error |= done[i].error != 0;
-         if (error) {
-            pthread_mutex_unlock(&csf->lock);
-            mali_csf_set_lost(csf, "a command stream reported an error in its done slot");
-            return VK_ERROR_DEVICE_LOST;
-         }
+      /* A fault that has not reached the log yet (queue_wait's CSF body
+       * scans the done slots directly; JM will drain events on demand). */
+      const char *lost_msg = MALI_PER_ARCH(queue_wait)(dev);
+      if (lost_msg) {
+         pthread_mutex_unlock(&dev->lock);
+         mali_device_set_lost(dev, "%s", lost_msg);
+         return VK_ERROR_DEVICE_LOST;
       }
 
       /* Sync files are waited for with poll(), everything else on the
@@ -182,7 +189,7 @@ sync_wait_many(struct vk_device *vkdev, uint32_t count,
       bool gpu_pending = false;
       for (uint32_t i = 0; i < count; i++) {
          struct mali_sync *s = to_sync(waits[i].sync);
-         if (sync_is_signaled(csf, s, pending)) {
+         if (sync_is_signaled(dev, s, pending)) {
             signaled++;
          } else if (s->fd >= 0 && nfds < ARRAY_SIZE(fds)) {
             fds[nfds++] = (struct pollfd){.fd = s->fd, .events = POLLIN};
@@ -203,7 +210,7 @@ sync_wait_many(struct vk_device *vkdev, uint32_t count,
 
       int64_t until = MIN2((int64_t)MIN2(abs_timeout_ns, (uint64_t)INT64_MAX), now + slice);
       if (!slept) {
-         csf->stats.waits++;
+         dev->stats.waits++;
          slept = true;
       }
       if (nfds) {
@@ -216,19 +223,19 @@ sync_wait_many(struct vk_device *vkdev, uint32_t count,
             .tv_sec = len / 1000000000ll,
             .tv_nsec = len % 1000000000ll,
          };
-         pthread_mutex_unlock(&csf->lock);
+         pthread_mutex_unlock(&dev->lock);
          ppoll(fds, nfds, &ts, NULL);
-         pthread_mutex_lock(&csf->lock);
+         pthread_mutex_lock(&dev->lock);
       } else {
          struct timespec ts = {
             .tv_sec = until / 1000000000ll,
             .tv_nsec = until % 1000000000ll,
          };
-         pthread_cond_timedwait(&csf->cond, &csf->lock, &ts);
+         pthread_cond_timedwait(&dev->cond, &dev->lock, &ts);
       }
-      csf->stats.wakeups++;
+      dev->stats.wakeups++;
    }
-   pthread_mutex_unlock(&csf->lock);
+   pthread_mutex_unlock(&dev->lock);
    return result;
 }
 
@@ -242,7 +249,7 @@ sync_wait_many(struct vk_device *vkdev, uint32_t count,
 static VkResult
 sync_import_sync_file(struct vk_device *vkdev, struct vk_sync *vs, int fd)
 {
-   struct mali_csf_device *csf = csf_of(vkdev);
+   struct mali_device *dev = dev_of(vkdev);
    struct mali_sync *s = to_sync(vs);
 
    int dup_fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
@@ -250,13 +257,13 @@ sync_import_sync_file(struct vk_device *vkdev, struct vk_sync *vs, int fd)
       return vk_errorf(vkdev, errno == EMFILE ? VK_ERROR_TOO_MANY_OBJECTS :
                                                 VK_ERROR_OUT_OF_HOST_MEMORY,
                        "cannot duplicate sync file %d: %s", fd, strerror(errno));
-   if (mali_kbase_fence_validate(csf->kb, dup_fd) != MALI_KBASE_SUCCESS) {
+   if (mali_kbase_fence_validate(dev->kbase, dup_fd) != MALI_KBASE_SUCCESS) {
       close(dup_fd);
       return vk_errorf(vkdev, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                        "fd %d is not a sync file", fd);
    }
 
-   pthread_mutex_lock(&csf->lock);
+   pthread_mutex_lock(&dev->lock);
    mali_sync_clear(s);
    if (mali_sync_file_signaled(dup_fd)) {
       close(dup_fd);
@@ -264,8 +271,8 @@ sync_import_sync_file(struct vk_device *vkdev, struct vk_sync *vs, int fd)
    } else {
       s->fd = dup_fd;
    }
-   pthread_cond_broadcast(&csf->cond);
-   pthread_mutex_unlock(&csf->lock);
+   pthread_cond_broadcast(&dev->cond);
+   pthread_mutex_unlock(&dev->lock);
    return VK_SUCCESS;
 }
 
@@ -278,14 +285,14 @@ sync_import_sync_file(struct vk_device *vkdev, struct vk_sync *vs, int fd)
 static VkResult
 sync_export_sync_file(struct vk_device *vkdev, struct vk_sync *vs, int *pfd)
 {
-   struct mali_csf_device *csf = csf_of(vkdev);
+   struct mali_device *dev = dev_of(vkdev);
    struct mali_sync *s = to_sync(vs);
    VkResult result = VK_SUCCESS;
 
-   pthread_mutex_lock(&csf->lock);
-   if (csf->lost) {
+   pthread_mutex_lock(&dev->lock);
+   if (dev->lost) {
       result = VK_ERROR_DEVICE_LOST;
-   } else if (sync_is_signaled(csf, s, false)) {
+   } else if (sync_is_signaled(dev, s, false)) {
       *pfd = -1;
    } else if (s->fd >= 0) {
       *pfd = fcntl(s->fd, F_DUPFD_CLOEXEC, 0);
@@ -294,13 +301,13 @@ sync_export_sync_file(struct vk_device *vkdev, struct vk_sync *vs, int *pfd)
                                                      VK_ERROR_OUT_OF_HOST_MEMORY,
                             "cannot duplicate a sync file: %s", strerror(errno));
    } else if (s->submitted) {
-      result = mali_sync_file_create(csf, 0, NULL, s->req, pfd);
+      result = MALI_PER_ARCH(sync_file_create)(dev, 0, NULL, s->req, pfd);
    } else {
       /* Nothing will signal it: invalid usage. The blob answers the same. */
       result = vk_errorf(vkdev, VK_ERROR_OUT_OF_HOST_MEMORY,
                          "exporting a sync file from a sync nothing will signal");
    }
-   pthread_mutex_unlock(&csf->lock);
+   pthread_mutex_unlock(&dev->lock);
    return result;
 }
 

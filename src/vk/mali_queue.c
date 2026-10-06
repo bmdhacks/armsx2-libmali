@@ -66,11 +66,11 @@
 
 /*
  * The runtime is told first (vk_device_set_lost, once), then waiters see
- * csf->lost: the runtime asserts that anything returning
+ * dev->lost: the runtime asserts that anything returning
  * VK_ERROR_DEVICE_LOST has already reported the loss.
  */
 void
-mali_csf_set_lost(struct mali_csf_device *csf, const char *fmt, ...)
+mali_device_set_lost(struct mali_device *dev, const char *fmt, ...)
 {
    char msg[256];
    va_list ap;
@@ -78,29 +78,31 @@ mali_csf_set_lost(struct mali_csf_device *csf, const char *fmt, ...)
    vsnprintf(msg, sizeof(msg), fmt, ap);
    va_end(ap);
 
-   if (p_atomic_cmpxchg(&csf->lost_reported, 0, 1) == 0) {
+   if (p_atomic_cmpxchg(&dev->lost_reported, 0, 1) == 0) {
       /* Always in the log, whatever the build (the runtime's own message
        * is debug-only). Device loss is never hidden. */
       mesa_loge("libmali: device lost: %s", msg);
-      vk_device_set_lost(&csf->dev->vk, "%s", msg);
-      mali_measure_event(csf->dev, "device lost: %s", msg);
+      vk_device_set_lost(&dev->vk, "%s", msg);
+      mali_measure_event(dev, "device lost: %s", msg);
    }
 
-   pthread_mutex_lock(&csf->lock);
-   csf->lost = true;
-   pthread_cond_broadcast(&csf->cond);
-   pthread_mutex_unlock(&csf->lock);
+   pthread_mutex_lock(&dev->lock);
+   dev->lost = true;
+   pthread_cond_broadcast(&dev->cond);
+   pthread_mutex_unlock(&dev->lock);
 }
 
-/* With csf->lock held. A done slot with its error word set means a stream
+/* With dev->lock held. A done slot with its error word set means a stream
  * faulted; that is device loss whether or not the kernel told us. Returns
- * the message for mali_csf_set_lost (called after the lock is dropped),
- * or NULL. */
-static const char *
-check_done_errors(struct mali_csf_device *csf)
+ * the message for mali_device_set_lost (called after the lock is
+ * dropped), or NULL. The CSF body of the queue_wait hook (mali_queue.h);
+ * also used directly by mali_sync.c's host wait. */
+const char *
+MALI_PER_ARCH(queue_wait)(struct mali_device *dev)
 {
-   struct mali_csf_queue *q = csf->queue;
-   if (!q || csf->lost)
+   struct mali_csf_device *csf = dev->csf;
+   struct mali_csf_queue *q = csf ? csf->queue : NULL;
+   if (!q || dev->lost)
       return NULL;
    volatile struct mali_cs_sync64 *done = mali_queue_done(q);
    for (unsigned i = 0; i < MALI_SUBQUEUE_COUNT; i++) {
@@ -111,9 +113,9 @@ check_done_errors(struct mali_csf_device *csf)
 }
 
 bool
-mali_csf_reached(struct mali_csf_device *csf, const uint64_t req[MALI_SUBQUEUE_COUNT])
+MALI_PER_ARCH(queue_reached)(struct mali_device *dev, const uint64_t req[MALI_SUBQUEUE_COUNT])
 {
-   struct mali_csf_queue *q = csf->queue;
+   struct mali_csf_queue *q = dev->csf->queue;
    if (!q)
       return true;
    volatile struct mali_cs_sync64 *done = mali_queue_done(q);
@@ -128,16 +130,15 @@ VkResult
 mali_device_check_status(struct vk_device *vkdev)
 {
    struct mali_device *dev = container_of(vkdev, struct mali_device, vk);
-   struct mali_csf_device *csf = dev->csf;
-   if (!csf)
+   if (!dev->csf)
       return VK_SUCCESS;
 
-   pthread_mutex_lock(&csf->lock);
-   const char *msg = check_done_errors(csf);
-   bool lost = csf->lost;
-   pthread_mutex_unlock(&csf->lock);
+   pthread_mutex_lock(&dev->lock);
+   const char *msg = MALI_PER_ARCH(queue_wait)(dev);
+   bool lost = dev->lost;
+   pthread_mutex_unlock(&dev->lock);
    if (msg) {
-      mali_csf_set_lost(csf, "%s", msg);
+      mali_device_set_lost(dev, "%s", msg);
       lost = true;
    }
    return lost ? VK_ERROR_DEVICE_LOST : VK_SUCCESS;
@@ -163,28 +164,29 @@ handle_group_error(struct mali_csf_device *csf, const struct kb_csf_notification
 {
    const struct kb_gpu_queue_group_error *e = &n->payload.csg_error.error;
    uint8_t handle = n->payload.csg_error.handle;
+   struct mali_device *dev = csf->dev;
 
-   pthread_mutex_lock(&csf->lock);
-   csf->stats.group_errors++;
+   pthread_mutex_lock(&dev->lock);
+   dev->stats.group_errors++;
    bool ours = csf->group_valid && handle == csf->group_handle;
-   pthread_mutex_unlock(&csf->lock);
+   pthread_mutex_unlock(&dev->lock);
 
    /* The kernel has terminated the group; every error type, the tiler
     * heap one included, is treated as device loss. */
    if (e->error_type == KB_GPU_QUEUE_GROUP_QUEUE_ERROR_FATAL) {
-      mali_csf_set_lost(csf,
-                        "queue group %u: %s: CS %u status 0x%08x sideband 0x%016llx%s",
-                        handle, group_error_name(e->error_type),
-                        e->payload.fatal_queue.csi_index,
-                        e->payload.fatal_queue.status,
-                        (unsigned long long)e->payload.fatal_queue.sideband,
-                        ours ? "" : " (not our group)");
+      mali_device_set_lost(dev,
+                           "queue group %u: %s: CS %u status 0x%08x sideband 0x%016llx%s",
+                           handle, group_error_name(e->error_type),
+                           e->payload.fatal_queue.csi_index,
+                           e->payload.fatal_queue.status,
+                           (unsigned long long)e->payload.fatal_queue.sideband,
+                           ours ? "" : " (not our group)");
    } else {
-      mali_csf_set_lost(csf, "queue group %u: %s: status 0x%08x sideband 0x%016llx%s",
-                        handle, group_error_name(e->error_type),
-                        e->payload.fatal_group.status,
-                        (unsigned long long)e->payload.fatal_group.sideband,
-                        ours ? "" : " (not our group)");
+      mali_device_set_lost(dev, "queue group %u: %s: status 0x%08x sideband 0x%016llx%s",
+                           handle, group_error_name(e->error_type),
+                           e->payload.fatal_group.status,
+                           (unsigned long long)e->payload.fatal_group.sideband,
+                           ours ? "" : " (not our group)");
    }
 }
 
@@ -192,19 +194,20 @@ static void *
 event_thread_main(void *arg)
 {
    struct mali_csf_device *csf = arg;
+   struct mali_device *dev = csf->dev;
    struct mali_kbase *kb = csf->kb;
 
    for (;;) {
       int m = mali_kbase_event_wait(kb, csf->wake_fd, 1000);
       if (m < 0) {
-         mali_csf_set_lost(csf, "poll on the kbase event channel failed: %s",
-                           strerror(errno));
+         mali_device_set_lost(dev, "poll on the kbase event channel failed: %s",
+                              strerror(errno));
          break;
       }
       if (m & 2)
          break;
       if (m & 4) {
-         mali_csf_set_lost(csf, "the kbase event channel reported an error");
+         mali_device_set_lost(dev, "the kbase event channel reported an error");
          break;
       }
       if (!(m & 1))
@@ -212,16 +215,16 @@ event_thread_main(void *arg)
 
       struct kb_csf_notification n;
       if (mali_kbase_event_read(kb, &n) != MALI_KBASE_SUCCESS) {
-         mali_csf_set_lost(csf, "reading the kbase event channel failed");
+         mali_device_set_lost(dev, "reading the kbase event channel failed");
          break;
       }
 
       switch (n.type) {
       case KB_CSF_NOTIFICATION_EVENT:
-         pthread_mutex_lock(&csf->lock);
-         csf->stats.kernel_events++;
-         pthread_cond_broadcast(&csf->cond);
-         pthread_mutex_unlock(&csf->lock);
+         pthread_mutex_lock(&dev->lock);
+         dev->stats.kernel_events++;
+         pthread_cond_broadcast(&dev->cond);
+         pthread_mutex_unlock(&dev->lock);
          break;
       case KB_CSF_NOTIFICATION_GPU_QUEUE_GROUP_ERROR:
          handle_group_error(csf, &n);
@@ -268,18 +271,8 @@ mali_csf_device_init(struct mali_device *dev)
 
    csf->shared_sb = dev->kbase->props.gpu_features & 0x8;
 
-   simple_mtx_init(&csf->slab_lock, mtx_plain);
-   list_inithead(&csf->free_slabs);
-   simple_mtx_init(&csf->meta_lock, mtx_plain);
-
-   pthread_condattr_t ca;
-   pthread_condattr_init(&ca);
-   pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
-   pthread_cond_init(&csf->cond, &ca);
-   pthread_condattr_destroy(&ca);
-   pthread_mutex_init(&csf->lock, NULL);
-
    dev->csf = csf;
+   dev->fe = csf;
    dev->vk.check_status = mali_device_check_status;
 
    if (mali_kbase_has_events(dev->kbase)) {
@@ -311,15 +304,9 @@ mali_csf_device_finish(struct mali_device *dev)
    if (csf->wake_fd >= 0)
       close(csf->wake_fd);
 
-   mali_meta_finish(dev);
-   mali_cmd_slabs_finish(csf);
-
-   pthread_cond_destroy(&csf->cond);
-   pthread_mutex_destroy(&csf->lock);
-   simple_mtx_destroy(&csf->meta_lock);
-   simple_mtx_destroy(&csf->slab_lock);
    dev->vk.check_status = NULL;
    dev->csf = NULL;
+   dev->fe = NULL;
    vk_free(&dev->vk.alloc, csf);
 }
 
@@ -371,11 +358,11 @@ ring_reserve(struct mali_csf_device *csf, struct mali_kbase_queue *rq, uint32_t 
    mali_kbase_queue_publish(csf->kb, rq);
    int64_t deadline = os_time_get_nano() + 10ll * 1000 * 1000 * 1000;
    while (mali_kbase_queue_space(rq) < need) {
-      if (p_atomic_read(&csf->lost))
+      if (p_atomic_read(&csf->dev->lost))
          return VK_ERROR_DEVICE_LOST;
       if (os_time_get_nano() > deadline) {
-         mali_csf_set_lost(csf, "a command stream ring stayed full for 10 s: "
-                                "the GPU is not consuming it");
+         mali_device_set_lost(csf->dev, "a command stream ring stayed full for 10 s: "
+                                        "the GPU is not consuming it");
          return VK_ERROR_DEVICE_LOST;
       }
       usleep(100);
@@ -522,11 +509,11 @@ queue_teardown(struct mali_device *dev, struct mali_csf_queue *q)
    struct mali_kbase *kb = dev->kbase;
 
    if (dev->csf) {
-      pthread_mutex_lock(&dev->csf->lock);
+      pthread_mutex_lock(&dev->lock);
       dev->csf->group_valid = false;
       if (dev->csf->queue == q)
          dev->csf->queue = NULL;
-      pthread_mutex_unlock(&dev->csf->lock);
+      pthread_mutex_unlock(&dev->lock);
    }
 
    /* The blob's order: group, then the queues, then the heap. */
@@ -583,11 +570,11 @@ mali_csf_queue_init(struct mali_device *dev, struct mali_queue *queue)
       }
    }
 
-   pthread_mutex_lock(&csf->lock);
+   pthread_mutex_lock(&dev->lock);
    csf->queue = q;
    csf->group_handle = q->group;
    csf->group_valid = true;
-   pthread_mutex_unlock(&csf->lock);
+   pthread_mutex_unlock(&dev->lock);
 
    /* Nothing waits for these: the rings run in order, so any submit comes
     * after them. */
@@ -602,6 +589,7 @@ mali_csf_queue_init(struct mali_device *dev, struct mali_queue *queue)
    }
 
    queue->csf = q;
+   queue->fe = q;
    return VK_SUCCESS;
 
 fail:
@@ -621,6 +609,7 @@ mali_csf_queue_finish(struct mali_device *dev, struct mali_queue *queue)
    queue_teardown(dev, q);
    vk_free(&dev->vk.alloc, q);
    queue->csf = NULL;
+   queue->fe = NULL;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -768,9 +757,9 @@ mali_queue_submit(struct vk_queue *vkq, struct vk_queue_submit *submit)
     * waits for them and sets the queue's fence sync64, which the rings
     * wait for (mali_sync_file.c). */
    uint64_t fence_need = 0;
-   pthread_mutex_lock(&csf->lock);
-   const char *lost_msg = check_done_errors(csf);
-   bool lost = csf->lost;
+   pthread_mutex_lock(&dev->lock);
+   const char *lost_msg = MALI_PER_ARCH(queue_wait)(dev);
+   bool lost = dev->lost;
    if (!lost) {
       volatile struct mali_cs_sync64 *done = mali_queue_done(q);
       for (uint32_t i = 0; i < submit->wait_count && result == VK_SUCCESS; i++) {
@@ -791,9 +780,9 @@ mali_queue_submit(struct vk_queue *vkq, struct vk_queue_submit *submit)
          }
       }
    }
-   pthread_mutex_unlock(&csf->lock);
+   pthread_mutex_unlock(&dev->lock);
    if (lost_msg) {
-      mali_csf_set_lost(csf, "%s", lost_msg);
+      mali_device_set_lost(dev, "%s", lost_msg);
       lost = true;
    }
    if (lost)
@@ -812,8 +801,8 @@ mali_queue_submit(struct vk_queue *vkq, struct vk_queue_submit *submit)
     * reading, and capture the submit's streams if asked to. */
    struct mali_measure_capture *cap = NULL;
    if (unlikely(dev->measure)) {
-      mali_measure_submit(dev, q, submit, seqno);
-      cap = mali_measure_capture_begin(dev, q, submit, seqno);
+      mali_measure_submit(dev, queue, submit, seqno);
+      cap = mali_measure_capture_begin(dev, queue, submit, seqno);
    }
 
    struct cmd_order order = {.n = submit->command_buffer_count};
@@ -943,7 +932,7 @@ mali_queue_submit(struct vk_queue *vkq, struct vk_queue_submit *submit)
    /* Signals: pending until every subqueue reaches what it will have
     * written by the end of this submit. Binary semaphore waits consume
     * the payload. */
-   pthread_mutex_lock(&csf->lock);
+   pthread_mutex_lock(&dev->lock);
    for (uint32_t i = 0; i < submit->wait_count; i++) {
       struct mali_sync *s = to_mali_sync(submit->waits[i].sync);
       if (!(s->vk.flags & VK_SYNC_IS_TIMELINE))
@@ -955,8 +944,8 @@ mali_queue_submit(struct vk_queue *vkq, struct vk_queue_submit *submit)
       s->submitted = true;
       memcpy(s->req, q->last_signal, sizeof(s->req));
    }
-   csf->stats.submits++;
-   pthread_mutex_unlock(&csf->lock);
+   dev->stats.submits++;
+   pthread_mutex_unlock(&dev->lock);
    return VK_SUCCESS;
 
 out:

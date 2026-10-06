@@ -261,13 +261,12 @@ const struct mali_shader *
 mali_meta_fs_get(struct mali_cmd_buffer *cmd, const struct mali_meta_fs_key *key)
 {
    struct mali_device *dev = cmd->dev;
-   struct mali_csf_device *csf = dev->csf;
    struct mali_shader *s = NULL;
 
-   simple_mtx_lock(&csf->meta_lock);
-   if (!csf->meta_gfx)
-      csf->meta_gfx = calloc(1, sizeof(struct mali_meta_gfx));
-   struct mali_meta_gfx *mg = csf->meta_gfx;
+   simple_mtx_lock(&dev->meta_lock);
+   if (!dev->meta_gfx)
+      dev->meta_gfx = calloc(1, sizeof(struct mali_meta_gfx));
+   struct mali_meta_gfx *mg = dev->meta_gfx;
    if (mg) {
       for (unsigned i = 0; i < mg->count; i++) {
          if (!memcmp(&mg->e[i].key, key, sizeof(*key))) {
@@ -306,7 +305,7 @@ mali_meta_fs_get(struct mali_cmd_buffer *cmd, const struct mali_meta_fs_key *key
          s = NULL;
       }
    }
-   simple_mtx_unlock(&csf->meta_lock);
+   simple_mtx_unlock(&dev->meta_lock);
 
    if (!s)
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -316,8 +315,7 @@ mali_meta_fs_get(struct mali_cmd_buffer *cmd, const struct mali_meta_fs_key *key
 void
 mali_meta_gfx_finish(struct mali_device *dev)
 {
-   struct mali_csf_device *csf = dev->csf;
-   struct mali_meta_gfx *mg = csf->meta_gfx;
+   struct mali_meta_gfx *mg = dev->meta_gfx;
    if (!mg)
       return;
    for (unsigned t = 0; t < ARRAY_SIZE(mg->copy); t++) {
@@ -327,7 +325,7 @@ mali_meta_gfx_finish(struct mali_device *dev)
    for (unsigned i = 0; i < mg->count; i++)
       mali_shader_unref(dev, mg->e[i].shader);
    free(mg);
-   csf->meta_gfx = NULL;
+   dev->meta_gfx = NULL;
 }
 
 bool
@@ -576,14 +574,13 @@ static const struct mali_shader *
 copy_get(struct mali_cmd_buffer *cmd, unsigned elem_log2, bool src_tex)
 {
    struct mali_device *dev = cmd->dev;
-   struct mali_csf_device *csf = dev->csf;
    struct mali_shader *s = NULL;
 
    assert(elem_log2 < 5);
-   simple_mtx_lock(&csf->meta_lock);
-   if (!csf->meta_gfx)
-      csf->meta_gfx = calloc(1, sizeof(struct mali_meta_gfx));
-   struct mali_meta_gfx *mg = csf->meta_gfx;
+   simple_mtx_lock(&dev->meta_lock);
+   if (!dev->meta_gfx)
+      dev->meta_gfx = calloc(1, sizeof(struct mali_meta_gfx));
+   struct mali_meta_gfx *mg = dev->meta_gfx;
    if (mg) {
       s = mg->copy[src_tex][elem_log2];
       if (!s) {
@@ -608,7 +605,7 @@ copy_get(struct mali_cmd_buffer *cmd, unsigned elem_log2, bool src_tex)
          mg->copy[src_tex][elem_log2] = s;
       }
    }
-   simple_mtx_unlock(&csf->meta_lock);
+   simple_mtx_unlock(&dev->meta_lock);
 
    if (!s)
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);

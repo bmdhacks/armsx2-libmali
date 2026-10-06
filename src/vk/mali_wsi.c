@@ -256,7 +256,6 @@ mali_wsi_release(struct mali_queue *queue, uint32_t count, const VkSemaphore *se
                  int *out_fd)
 {
    struct mali_device *dev = container_of(queue->vk.base.device, struct mali_device, vk);
-   struct mali_csf_device *csf = dev->csf;
    VkResult result = VK_SUCCESS;
 
    *out_fd = -1;
@@ -271,10 +270,10 @@ mali_wsi_release(struct mali_queue *queue, uint32_t count, const VkSemaphore *se
     * The blob's release: kcpu waits for every semaphore's payload, then a
     * kcpu FENCE_SIGNAL whose sync file is the release fence. Here the
     * payloads are sync files (FENCE_WAIT) and GPU work (CQS waits on the
-    * done slots), both in mali_sync_file_create.
+    * done slots), both in the sync_file_create hook (mali_queue.h).
     */
-   pthread_mutex_lock(&csf->lock);
-   if (csf->lost) {
+   pthread_mutex_lock(&dev->lock);
+   if (dev->lost) {
       result = VK_ERROR_DEVICE_LOST;
       goto out;
    }
@@ -295,7 +294,7 @@ mali_wsi_release(struct mali_queue *queue, uint32_t count, const VkSemaphore *se
       /* A semaphore nothing signals: invalid usage; the blob waits for
        * nothing then, and so do we. */
    }
-   result = mali_sync_file_create(csf, nfds, fds, req, out_fd);
+   result = MALI_PER_ARCH(sync_file_create)(dev, nfds, fds, req, out_fd);
    if (result != VK_SUCCESS)
       goto out;
 
@@ -311,7 +310,7 @@ mali_wsi_release(struct mali_queue *queue, uint32_t count, const VkSemaphore *se
    }
 
 out:
-   pthread_mutex_unlock(&csf->lock);
+   pthread_mutex_unlock(&dev->lock);
    STACK_ARRAY_FINISH(fds);
    return result;
 }

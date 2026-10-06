@@ -6,10 +6,12 @@
 /*
  * The CSF side of a VkDevice and its VkQueue:
  *
- *  - struct mali_csf_device: per device. Scoreboard facts, the cache of
- *    command-buffer memory slabs, the sync-object lock and condition that
- *    host waits sleep on, the event thread that reads the kbase event
- *    channel, and device loss.
+ *  - struct mali_csf_device: per device. Scoreboard facts, the event
+ *    thread that reads the kbase event channel, the queue group handle,
+ *    and the kcpu queue. The state every frontend needs alike (the
+ *    command-buffer slab cache, internal shader caches, the sync-object
+ *    lock and condition, and device loss) lives on struct mali_device
+ *    instead (mali_vk.h).
  *  - struct mali_csf_queue: per VkQueue. One kbase queue group with one CS
  *    queue (ring) per subqueue, the tiler heap, the GPU sync objects, and
  *    the submit counter.
@@ -18,6 +20,13 @@
  *    on N"; it is signalled once every subqueue has finished submit N's
  *    work, which each subqueue reports by writing N into its own "done"
  *    sync object in GPU memory.
+ *
+ * mali_sync.c and mali_wsi.c are mostly frontend-neutral; the few
+ * operations that genuinely differ per frontend (whether a submit's work
+ * has been reached, noticing a fault before the next event, and sync-file
+ * import/export) are declared below as MALI_PER_ARCH() hooks. Today only
+ * the v11 (CSF) body exists, defined in this file's .c and in
+ * mali_sync_file.c; a v9 (JM) body comes with the JM queue.
  */
 
 #ifndef MALI_QUEUE_H
@@ -35,20 +44,11 @@
 #include "kbase/kbase.h"
 
 #include "mali_cs.h"
+/* mali_cs.h sets PAN_ARCH from MALI_PAN_ARCH, which mali_arch.h needs. */
+#include "mali_arch.h"
+#include "mali_vk.h"
 
-struct mali_device;
-struct mali_queue;
 struct mali_shader;
-
-/* Internal compute shaders for copies and fills (mali_cmd_copy.c). */
-enum mali_meta_shader {
-   MALI_META_COPY_16,     /* 16 bytes per invocation */
-   MALI_META_COPY_4,
-   MALI_META_COPY_1,
-   MALI_META_FILL_16,
-   MALI_META_FILL_4,
-   MALI_META_COUNT,
-};
 
 struct mali_csf_device {
    struct mali_device *dev;
@@ -60,20 +60,6 @@ struct mali_csf_device {
     * counter: gpu_features bit 3, as the blob decides. */
    bool shared_sb;
 
-   /* Command-buffer memory: free 64 KiB slabs, shared by every command
-    * pool of the device. */
-   simple_mtx_t slab_lock;
-   struct list_head free_slabs;
-   unsigned free_slab_count;
-
-   /* Guards every mali_sync's state and the device's loss state; waiters
-    * sleep on cond, which submits, host signals and kernel events
-    * broadcast. */
-   pthread_mutex_t lock;
-   pthread_cond_t cond;
-   bool lost;
-   uint32_t lost_reported;        /* vk_device_set_lost called (atomic) */
-
    /* The event thread: reads the kbase event channel, wakes waiters,
     * turns a queue-group error into device loss. */
    pthread_t thread;
@@ -82,28 +68,12 @@ struct mali_csf_device {
    uint8_t group_handle;          /* the group whose errors mean loss */
    bool group_valid;
 
-   /* Internal shaders, compiled on first use. */
-   simple_mtx_t meta_lock;
-   struct mali_shader *meta[MALI_META_COUNT];
-   /* Internal fragment shaders (mali_cmd_meta_gfx.c), by key. */
-   void *meta_gfx;
-   /* Blend shaders (mali_blend.c), by key. Under meta_lock. */
-   void *blend_shaders;
-
    /* The device's one queue (MALI_QUEUE_COUNT is 1). */
    struct mali_csf_queue *queue;
 
    /* Sync-file import and export (mali_sync_file.c): the kcpu queue,
-    * created on first use. Under lock. */
+    * created on first use. Under dev->lock. */
    struct mali_kcpu *kcpu;
-
-   struct {
-      uint64_t kernel_events;       /* EVENT notifications read */
-      uint64_t group_errors;
-      uint64_t waits;               /* host waits that had to sleep */
-      uint64_t wakeups;             /* condition wake-ups while waiting */
-      uint64_t submits;
-   } stats;
 };
 
 /* Where the queue's sync memory keeps what (one page, CSF event memory). */
@@ -210,16 +180,28 @@ VkResult mali_queue_submit(struct vk_queue *vkq, struct vk_queue_submit *submit)
 VkResult mali_device_check_status(struct vk_device *vkdev);
 
 /* Report device loss to the runtime and the log (once), then mark it and
- * wake every waiter. Takes csf->lock; call without it. */
-void mali_csf_set_lost(struct mali_csf_device *csf, const char *fmt, ...)
+ * wake every waiter. Takes dev->lock; call without it. */
+void mali_device_set_lost(struct mali_device *dev, const char *fmt, ...)
    __attribute__((format(printf, 2, 3)));
+
+/*
+ * With dev->lock held: does this device's frontend have a fault that has
+ * not been reported yet? CSF: a done slot with its error word set (a
+ * stream faulted, whether or not the kernel's event has been read yet).
+ * JM will scan atom events on demand instead (design doc §9.3). Returns
+ * the message for mali_device_set_lost (called after the lock is
+ * dropped), or NULL. Shared by mali_device_check_status, mali_queue_submit
+ * and a host wait (mali_sync.c), so a wait notices a fault without
+ * depending on the event thread to have run first.
+ */
+const char *MALI_PER_ARCH(queue_wait)(struct mali_device *dev);
 
 /* ---------------------------------------------------------------------- */
 /* Sync objects                                                            */
 
 struct mali_sync {
    struct vk_sync vk;
-   /* Under mali_csf_device::lock. */
+   /* Under mali_device::lock. */
    bool host_signaled;
    bool submitted;                  /* a submit will signal it */
    uint64_t req[MALI_SUBQUEUE_COUNT];   /* ... when done[i] >= req[i] for all i */
@@ -228,8 +210,13 @@ struct mali_sync {
 
 extern const struct vk_sync_type mali_sync_type;
 
-/* Drop a sync's payload (close its sync file). With csf->lock held. */
+/* Drop a sync's payload (close its sync file). With dev->lock held. */
 void mali_sync_clear(struct mali_sync *s);
+
+/* With dev->lock held: has every subqueue reached req? (a fault in a done
+ * slot counts as device loss, not as "reached"; mali_sync.c's own
+ * dev->lost check covers that separately). */
+bool MALI_PER_ARCH(queue_reached)(struct mali_device *dev, const uint64_t req[MALI_SUBQUEUE_COUNT]);
 
 /* ---------------------------------------------------------------------- */
 /* Sync files (mali_sync_file.c)                                           */
@@ -238,14 +225,14 @@ void mali_sync_clear(struct mali_sync *s);
  * GPU wait on a sync file: the kcpu queue waits for fd, then sets the
  * queue's fence sync64 to *value; a ring waits for "fence > *value - 1".
  * The kernel takes its own reference, so fd may be closed afterwards.
- * With csf->lock held.
+ * With csf->dev->lock held.
  */
 VkResult mali_sync_file_gpu_wait(struct mali_csf_device *csf, int fd, uint64_t *value);
 
 /*
  * A new sync file that signals once every sync file in fds has signalled
  * and every subqueue has reached req (req may be NULL). *out = -1 when
- * nothing is left to wait for. With csf->lock held.
+ * nothing is left to wait for. With csf->dev->lock held.
  */
 VkResult mali_sync_file_create(struct mali_csf_device *csf, uint32_t fd_count,
                                const int *fds, const uint64_t *req, int *out);
@@ -269,8 +256,24 @@ mali_queue_fence_va(const struct mali_csf_queue *q)
    return q->sync_mem.gpu_va + MALI_QUEUE_FENCE_OFFSET;
 }
 
-/* With csf->lock held: has every subqueue reached req? Checks the done
- * slots' error words too (a fault there is device loss). */
-bool mali_csf_reached(struct mali_csf_device *csf, const uint64_t req[MALI_SUBQUEUE_COUNT]);
+/*
+ * Frontend-neutral callers (mali_sync.c, mali_wsi.c) reach the sync-file
+ * primitives above through these, so the call sites do not name the CSF
+ * type. mali_sync_file.c stays CSF-only (design doc §2.1); a JM frontend
+ * gets its own mali_jm_sync_file.c and its own MALI_PER_ARCH bodies, not
+ * these inline ones.
+ */
+static inline VkResult
+MALI_PER_ARCH(sync_file_gpu_wait)(struct mali_device *dev, int fd, uint64_t *value)
+{
+   return mali_sync_file_gpu_wait(dev->csf, fd, value);
+}
+
+static inline VkResult
+MALI_PER_ARCH(sync_file_create)(struct mali_device *dev, uint32_t fd_count, const int *fds,
+                                const uint64_t *req, int *out)
+{
+   return mali_sync_file_create(dev->csf, fd_count, fds, req, out);
+}
 
 #endif

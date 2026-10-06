@@ -11,7 +11,11 @@
 #ifndef MALI_VK_H
 #define MALI_VK_H
 
+#include <pthread.h>
 #include <stdint.h>
+
+#include "util/list.h"
+#include "util/simple_mtx.h"
 
 #include "vk_device.h"
 #include "vk_instance.h"
@@ -84,11 +88,29 @@ void mali_kbase_log_to_vk(void *user, const char *msg);
 struct mali_csf_queue;
 struct mali_csf_device;
 struct mali_measure;
+struct mali_shader;
+
+/* Internal compute/fragment shaders for copies, fills and blits
+ * (mali_cmd_copy.c, mali_cmd_meta_gfx.c). Frontend-neutral: every GPU
+ * architecture needs the same internal shaders, compiled on first use and
+ * cached for the device's lifetime. */
+enum mali_meta_shader {
+   MALI_META_COPY_16,     /* 16 bytes per invocation */
+   MALI_META_COPY_4,
+   MALI_META_COPY_1,
+   MALI_META_FILL_16,
+   MALI_META_FILL_4,
+   MALI_META_COUNT,
+};
 
 struct mali_queue {
    struct vk_queue vk;
    /* Queue group, rings, submit state (mali_queue.h). */
    struct mali_csf_queue *csf;
+   /* Same object as csf above, untyped: lets frontend-neutral code (none
+    * yet) hold a queue pointer without the CSF type. Set alongside csf;
+    * the CSF (and, later, JM) queue-init path owns both. */
+   void *fe;
 };
 
 VK_DEFINE_HANDLE_CASTS(mali_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
@@ -107,9 +129,54 @@ struct mali_device {
    struct mali_bo_pool exec_pool;
    struct mali_bo_pool desc_pool;
 
-   /* Command-stream state shared by the queue and the command buffers
-    * (mali_queue.h). */
+   /*
+    * Device state every GPU architecture needs, regardless of frontend
+    * (CSF or JM): command-buffer memory, internal shaders, the sync
+    * waiter lock and device-loss state, and submit statistics. This used
+    * to live in struct mali_csf_device; it moved here because none of it
+    * is CSF-specific (the JM backend will need the same bookkeeping).
+    * Initialized by mali_device.c before the frontend's own device-init
+    * runs, so it exists under either frontend.
+    */
+
+   /* Command-buffer memory: free 64 KiB slabs, shared by every command
+    * pool of the device. */
+   simple_mtx_t slab_lock;
+   struct list_head free_slabs;
+   unsigned free_slab_count;
+
+   /* Internal shaders, compiled on first use. */
+   simple_mtx_t meta_lock;
+   struct mali_shader *meta[MALI_META_COUNT];
+   /* Internal fragment shaders (mali_cmd_meta_gfx.c), by key. */
+   void *meta_gfx;
+   /* Blend shaders (mali_blend.c), by key. Under meta_lock. */
+   void *blend_shaders;
+
+   /* Guards every mali_sync's state and the device's loss state; waiters
+    * sleep on cond, which submits, host signals and kernel (or, on JM,
+    * on-demand) events broadcast. */
+   pthread_mutex_t lock;
+   pthread_cond_t cond;
+   bool lost;
+   uint32_t lost_reported;        /* vk_device_set_lost called (atomic) */
+
+   struct {
+      uint64_t kernel_events;       /* EVENT notifications read */
+      uint64_t group_errors;
+      uint64_t waits;               /* host waits that had to sleep */
+      uint64_t wakeups;             /* condition wake-ups while waiting */
+      uint64_t submits;
+   } stats;
+
+   /* Command-stream state specific to the device's frontend: struct
+    * mali_csf_device (CSF, v11) today; struct mali_jm_device (JM, v9)
+    * once that frontend exists. Scoreboard facts, the event thread, the
+    * queue group and the kcpu queue stay inside it (mali_queue.h). */
    struct mali_csf_device *csf;
+   /* Same object as csf above, untyped: lets frontend-neutral code hold a
+    * device pointer without the CSF type. Set alongside csf. */
+   void *fe;
 
    /* Timing and command-stream capture (src/measurement/); NULL unless
     * LIBMALI_MEASURE or debug.libmali.measure turns them on. */

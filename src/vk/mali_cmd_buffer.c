@@ -49,17 +49,15 @@
 static struct mali_cmd_slab *
 slab_new(struct mali_device *dev, uint64_t size, bool recycle)
 {
-   struct mali_csf_device *csf = dev->csf;
-
    if (recycle) {
-      simple_mtx_lock(&csf->slab_lock);
+      simple_mtx_lock(&dev->slab_lock);
       struct mali_cmd_slab *s = NULL;
-      if (!list_is_empty(&csf->free_slabs)) {
-         s = list_first_entry(&csf->free_slabs, struct mali_cmd_slab, link);
+      if (!list_is_empty(&dev->free_slabs)) {
+         s = list_first_entry(&dev->free_slabs, struct mali_cmd_slab, link);
          list_del(&s->link);
-         csf->free_slab_count--;
+         dev->free_slab_count--;
       }
-      simple_mtx_unlock(&csf->slab_lock);
+      simple_mtx_unlock(&dev->slab_lock);
       if (s)
          return s;
    }
@@ -86,15 +84,14 @@ slab_new(struct mali_device *dev, uint64_t size, bool recycle)
 static void
 slab_release(struct mali_device *dev, struct mali_cmd_slab *s)
 {
-   struct mali_csf_device *csf = dev->csf;
    if (s->recycle) {
-      simple_mtx_lock(&csf->slab_lock);
-      if (csf->free_slab_count < MALI_CMD_FREE_SLABS_MAX) {
-         list_add(&s->link, &csf->free_slabs);
-         csf->free_slab_count++;
+      simple_mtx_lock(&dev->slab_lock);
+      if (dev->free_slab_count < MALI_CMD_FREE_SLABS_MAX) {
+         list_add(&s->link, &dev->free_slabs);
+         dev->free_slab_count++;
          s = NULL;
       }
-      simple_mtx_unlock(&csf->slab_lock);
+      simple_mtx_unlock(&dev->slab_lock);
       if (!s)
          return;
    }
@@ -103,14 +100,14 @@ slab_release(struct mali_device *dev, struct mali_cmd_slab *s)
 }
 
 void
-mali_cmd_slabs_finish(struct mali_csf_device *csf)
+mali_cmd_slabs_finish(struct mali_device *dev)
 {
-   list_for_each_entry_safe(struct mali_cmd_slab, s, &csf->free_slabs, link) {
+   list_for_each_entry_safe(struct mali_cmd_slab, s, &dev->free_slabs, link) {
       list_del(&s->link);
-      mali_kbase_free(csf->kb, &s->bo);
+      mali_kbase_free(dev->kbase, &s->bo);
       free(s);
    }
-   csf->free_slab_count = 0;
+   dev->free_slab_count = 0;
 }
 
 struct mali_ptr

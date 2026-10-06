@@ -21,7 +21,7 @@
  * blob's behaviour; an export only ever depends on work that comes after
  * the earlier imports anyway.
  *
- * All of it runs under mali_csf_device::lock.
+ * All of it runs under mali_device::lock.
  */
 
 #ifndef _GNU_SOURCE
@@ -234,10 +234,10 @@ mali_sync_file_create(struct mali_csf_device *csf, uint32_t fd_count, const int 
 void
 mali_sync_file_finish(struct mali_csf_device *csf)
 {
-   pthread_mutex_lock(&csf->lock);
+   pthread_mutex_lock(&csf->dev->lock);
    struct mali_kcpu *k = csf->kcpu;
    csf->kcpu = NULL;
-   pthread_mutex_unlock(&csf->lock);
+   pthread_mutex_unlock(&csf->dev->lock);
    if (!k)
       return;
    /* The kernel drains what is still queued without waiting (sync-file

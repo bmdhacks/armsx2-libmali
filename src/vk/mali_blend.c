@@ -301,21 +301,20 @@ VkResult
 mali_blend_shader_get(struct mali_device *dev, const struct mali_blend_shader_key *key,
                       uint64_t *addr)
 {
-   struct mali_csf_device *csf = dev->csf;
    VkResult result = VK_SUCCESS;
 
-   simple_mtx_lock(&csf->meta_lock);
-   struct blend_cache *cache = csf->blend_shaders;
+   simple_mtx_lock(&dev->meta_lock);
+   struct blend_cache *cache = dev->blend_shaders;
    if (!cache) {
       cache = calloc(1, sizeof(*cache));
       if (cache)
          cache->ht = _mesa_hash_table_create(NULL, key_hash, key_equal);
       if (!cache || !cache->ht) {
          free(cache);
-         simple_mtx_unlock(&csf->meta_lock);
+         simple_mtx_unlock(&dev->meta_lock);
          return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
       }
-      csf->blend_shaders = cache;
+      dev->blend_shaders = cache;
    }
 
    struct hash_entry *he = _mesa_hash_table_search(cache->ht, key);
@@ -336,21 +335,21 @@ mali_blend_shader_get(struct mali_device *dev, const struct mali_blend_shader_ke
          }
       }
    }
-   simple_mtx_unlock(&csf->meta_lock);
+   simple_mtx_unlock(&dev->meta_lock);
    return result;
 }
 
 unsigned
 mali_blend_shader_count(struct mali_device *dev)
 {
-   struct blend_cache *cache = dev->csf ? dev->csf->blend_shaders : NULL;
+   struct blend_cache *cache = dev->blend_shaders;
    return cache ? _mesa_hash_table_num_entries(cache->ht) : 0;
 }
 
 void
 mali_blend_shaders_finish(struct mali_device *dev)
 {
-   struct blend_cache *cache = dev->csf->blend_shaders;
+   struct blend_cache *cache = dev->blend_shaders;
    if (!cache)
       return;
    hash_table_foreach(cache->ht, he) {
@@ -360,5 +359,5 @@ mali_blend_shaders_finish(struct mali_device *dev)
    }
    _mesa_hash_table_destroy(cache->ht, NULL);
    free(cache);
-   dev->csf->blend_shaders = NULL;
+   dev->blend_shaders = NULL;
 }
