@@ -280,7 +280,7 @@ mali_wsi_release(struct mali_queue *queue, uint32_t count, const VkSemaphore *se
    for (uint32_t i = 0; i < count; i++) {
       VK_FROM_HANDLE(vk_semaphore, sem, semaphores[i]);
       struct vk_sync *sync = vk_semaphore_get_active_sync(sem);
-      if (sync->type != &mali_sync_type || (sync->flags & VK_SYNC_IS_TIMELINE))
+      if (sync->type != &MALI_PER_ARCH(sync_type) || (sync->flags & VK_SYNC_IS_TIMELINE))
          continue;   /* the spec allows binary semaphores only */
       struct mali_sync *s = container_of(sync, struct mali_sync, vk);
       if (s->host_signaled)
@@ -303,9 +303,9 @@ mali_wsi_release(struct mali_queue *queue, uint32_t count, const VkSemaphore *se
       VK_FROM_HANDLE(vk_semaphore, sem, semaphores[i]);
       if (sem->temporary) {
          vk_semaphore_reset_temporary(&dev->vk, sem);
-      } else if (sem->permanent.type == &mali_sync_type &&
+      } else if (sem->permanent.type == &MALI_PER_ARCH(sync_type) &&
                  !(sem->permanent.flags & VK_SYNC_IS_TIMELINE)) {
-         mali_sync_clear(container_of(&sem->permanent, struct mali_sync, vk));
+         MALI_PER_ARCH(sync_clear)(container_of(&sem->permanent, struct mali_sync, vk));
       }
    }
 

@@ -22,11 +22,18 @@
  * device (design doc §2.3). The handful of operations that genuinely
  * differ per frontend (has a submit's work been reached, noticing a fault
  * before the next event, sync-file import/export) go through the
- * MALI_PER_ARCH() hooks declared in mali_queue.h; only today's v11 (CSF)
- * bodies exist.
+ * MALI_PER_ARCH() hooks declared in mali_queue.h (CSF, v11) and mali_jm.h
+ * (job manager, v9). The file is built once per arch; on v9 a GPU signal's
+ * payload is a submission number and its tracker atom instead of per-
+ * subqueue done values, and a sleeping host wait reads kbase events itself
+ * (mali_jm_queue.c) instead of waiting for an event thread.
  */
 
+#if defined(PAN_ARCH) && PAN_ARCH == 9
+#include "mali_jm.h"
+#else
 #include "mali_queue.h"
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -52,7 +59,7 @@ dev_of(struct vk_device *vkdev)
 }
 
 void
-mali_sync_clear(struct mali_sync *s)
+MALI_PER_ARCH(sync_clear)(struct mali_sync *s)
 {
    s->host_signaled = false;
    s->submitted = false;
@@ -88,7 +95,7 @@ sync_signal(struct vk_device *vkdev, struct vk_sync *vs, uint64_t value)
    struct mali_device *dev = dev_of(vkdev);
    struct mali_sync *s = to_sync(vs);
    pthread_mutex_lock(&dev->lock);
-   mali_sync_clear(s);
+   MALI_PER_ARCH(sync_clear)(s);
    s->host_signaled = true;
    pthread_cond_broadcast(&dev->cond);
    pthread_mutex_unlock(&dev->lock);
@@ -101,7 +108,7 @@ sync_reset(struct vk_device *vkdev, struct vk_sync *vs)
    struct mali_device *dev = dev_of(vkdev);
    struct mali_sync *s = to_sync(vs);
    pthread_mutex_lock(&dev->lock);
-   mali_sync_clear(s);
+   MALI_PER_ARCH(sync_clear)(s);
    pthread_mutex_unlock(&dev->lock);
    return VK_SUCCESS;
 }
@@ -112,13 +119,13 @@ sync_move(struct vk_device *vkdev, struct vk_sync *dst, struct vk_sync *src)
    struct mali_device *dev = dev_of(vkdev);
    struct mali_sync *d = to_sync(dst), *s = to_sync(src);
    pthread_mutex_lock(&dev->lock);
-   mali_sync_clear(d);
+   MALI_PER_ARCH(sync_clear)(d);
    d->host_signaled = s->host_signaled;
    d->submitted = s->submitted;
    memcpy(d->req, s->req, sizeof(d->req));
    d->fd = s->fd;
    s->fd = -1;
-   mali_sync_clear(s);
+   MALI_PER_ARCH(sync_clear)(s);
    pthread_mutex_unlock(&dev->lock);
    return VK_SUCCESS;
 }
@@ -135,7 +142,7 @@ sync_is_signaled(struct mali_device *dev, struct mali_sync *s, bool pending)
          return true;
       if (!mali_sync_file_signaled(s->fd))
          return false;
-      mali_sync_clear(s);
+      MALI_PER_ARCH(sync_clear)(s);
       s->host_signaled = true;
       return true;
    }
@@ -158,10 +165,10 @@ sync_wait_many(struct vk_device *vkdev, uint32_t count,
    struct mali_device *dev = dev_of(vkdev);
    const bool any = flags & VK_SYNC_WAIT_ANY;
    const bool pending = flags & VK_SYNC_WAIT_PENDING;
-   /* Whether a background notifier exists to broadcast dev->cond on its
-    * own (CSF's event thread; JM's on-demand reader has no equivalent
-    * yet) decides only how long a sleep waits between re-checks. */
-   const bool has_notifier = dev->csf && dev->csf->thread_running;
+   /* Whether something wakes a sleeping wait when the GPU finishes (CSF's
+    * event thread; on JM the sleeping wait reads events itself) decides
+    * only how long a sleep waits between re-checks. */
+   const bool has_notifier = MALI_PER_ARCH(queue_has_notifier)(dev);
    const int64_t slice = has_notifier ? WAIT_SLICE_EVENTS_NS : WAIT_SLICE_NO_EVENTS_NS;
    VkResult result;
    bool slept = false;
@@ -227,11 +234,7 @@ sync_wait_many(struct vk_device *vkdev, uint32_t count,
          ppoll(fds, nfds, &ts, NULL);
          pthread_mutex_lock(&dev->lock);
       } else {
-         struct timespec ts = {
-            .tv_sec = until / 1000000000ll,
-            .tv_nsec = until % 1000000000ll,
-         };
-         pthread_cond_timedwait(&dev->cond, &dev->lock, &ts);
+         MALI_PER_ARCH(queue_sleep)(dev, until);
       }
       dev->stats.wakeups++;
    }
@@ -264,7 +267,7 @@ sync_import_sync_file(struct vk_device *vkdev, struct vk_sync *vs, int fd)
    }
 
    pthread_mutex_lock(&dev->lock);
-   mali_sync_clear(s);
+   MALI_PER_ARCH(sync_clear)(s);
    if (mali_sync_file_signaled(dup_fd)) {
       close(dup_fd);
       s->host_signaled = true;
@@ -311,7 +314,7 @@ sync_export_sync_file(struct vk_device *vkdev, struct vk_sync *vs, int *pfd)
    return result;
 }
 
-const struct vk_sync_type mali_sync_type = {
+const struct vk_sync_type MALI_PER_ARCH(sync_type) = {
    .size = sizeof(struct mali_sync),
    .features = VK_SYNC_FEATURE_BINARY | VK_SYNC_FEATURE_GPU_WAIT |
                VK_SYNC_FEATURE_CPU_WAIT |

@@ -48,8 +48,11 @@
 #error "MALI_PAN_ARCH must be defined"
 #endif
 
-/* VkFence and binary VkSemaphore (mali_sync.c). */
-static const struct vk_sync_type *const mali_sync_types[] = { &mali_sync_type, NULL };
+/* VkFence and binary VkSemaphore (mali_sync.c, built once per arch). */
+static const struct vk_sync_type *const mali_v11_sync_types[] = { &mali_v11_sync_type, NULL };
+static const struct vk_sync_type *const mali_v9_sync_types[] = { &mali_v9_sync_type, NULL };
+
+bool mali_jm_test_enable;
 
 void
 mali_kbase_log_to_vk(void *user, const char *msg)
@@ -63,6 +66,15 @@ mali_kbase_log_to_vk(void *user, const char *msg)
 bool
 mali_device_name(const struct mali_kbase_gpu_props *p, char *buf, size_t size)
 {
+   /* Arch 9: product 0x9001 is the G57, the only one the T820 blob
+    * accepts (design doc §3). The exact name the blob reports is still to
+    * be read (§13); physical_device_create skips arch 9 for now anyway. */
+   if (p->arch_major == 9) {
+      if ((p->product_id & 0xf00f) != 0x9001)
+         return false;
+      snprintf(buf, size, "Mali-G57 MC%u", p->core_count);
+      return true;
+   }
    if (p->arch_major != MALI_PAN_ARCH)
       return false;
 
@@ -562,13 +574,17 @@ physical_device_create(struct mali_instance *instance, const char *path,
    pdev->props = kb->props;
    pdev->cs_work_registers = kb->glb.cs_work_registers;
    pdev->arch = pdev->props.arch_major;
+   const enum mali_kbase_frontend frontend = kb->frontend;
    mali_kbase_destroy(kb);
 
-   /* mali_device_name() is still the only arch gate: it accepts arch
-    * MALI_PAN_ARCH (11) and rejects everything else, including arch 9
-    * (G57/G77, job manager), for which this build has no back half yet. */
+   /* The arch has to match the frontend the kernel speaks: CSF with v11,
+    * the job manager with v9 (design doc §3). Arch 9 is accepted only by
+    * the job-manager host tests until its command recording exists. */
+   const bool arch_ok =
+      (pdev->arch == MALI_PAN_ARCH && frontend == MALI_KBASE_FRONTEND_CSF) ||
+      (pdev->arch == 9 && frontend == MALI_KBASE_FRONTEND_JM && mali_jm_test_enable);
    char name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
-   if (!mali_device_name(&pdev->props, name, sizeof(name))) {
+   if (!arch_ok || !mali_device_name(&pdev->props, name, sizeof(name))) {
       mesa_logw("libmali: skipping %s: GPU product 0x%04x (arch %u) is not "
                 "one this driver was built for (arch %u)", path,
                 pdev->props.product_id, pdev->props.arch_major, MALI_PAN_ARCH);
@@ -602,7 +618,7 @@ physical_device_create(struct mali_instance *instance, const char *path,
    vk_physical_device_dispatch_table_from_entrypoints(
       &pdev->vk.dispatch_table, &mali_waist_physical_device_entrypoints, false);
 
-   pdev->vk.supported_sync_types = mali_sync_types;
+   pdev->vk.supported_sync_types = pdev->arch == 9 ? mali_v9_sync_types : mali_v11_sync_types;
 
    /* Compiled shaders are what pipeline caches hold. */
    pdev->vk.pipeline_cache_import_ops = mali_pipeline_cache_import_ops;

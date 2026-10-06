@@ -24,9 +24,10 @@
  * mali_sync.c and mali_wsi.c are mostly frontend-neutral; the few
  * operations that genuinely differ per frontend (whether a submit's work
  * has been reached, noticing a fault before the next event, and sync-file
- * import/export) are declared below as MALI_PER_ARCH() hooks. Today only
- * the v11 (CSF) body exists, defined in this file's .c and in
- * mali_sync_file.c; a v9 (JM) body comes with the JM queue.
+ * import/export, how a host wait sleeps) are declared below as
+ * MALI_PER_ARCH() hooks. This header has the v11 (CSF) bodies, defined in
+ * mali_queue.c, mali_sync_file.c and inline below; the v9 (JM) bodies are
+ * in mali_jm.h, mali_jm_queue.c and mali_jm_sync_file.c.
  */
 
 #ifndef MALI_QUEUE_H
@@ -208,15 +209,35 @@ struct mali_sync {
    int fd;                          /* an imported sync file, or -1 */
 };
 
-extern const struct vk_sync_type mali_sync_type;
+extern const struct vk_sync_type MALI_PER_ARCH(sync_type);
 
 /* Drop a sync's payload (close its sync file). With dev->lock held. */
-void mali_sync_clear(struct mali_sync *s);
+void MALI_PER_ARCH(sync_clear)(struct mali_sync *s);
 
 /* With dev->lock held: has every subqueue reached req? (a fault in a done
  * slot counts as device loss, not as "reached"; mali_sync.c's own
  * dev->lost check covers that separately). */
 bool MALI_PER_ARCH(queue_reached)(struct mali_device *dev, const uint64_t req[MALI_SUBQUEUE_COUNT]);
+
+/* Does an event thread wake host waits when the GPU finishes? (Decides
+ * only how often a sleeping wait re-checks; mali_sync.c.) */
+static inline bool
+MALI_PER_ARCH(queue_has_notifier)(struct mali_device *dev)
+{
+   return dev->csf && dev->csf->thread_running;
+}
+
+/* A host wait's sleep, with dev->lock held: until a broadcast of
+ * dev->cond (the event thread, a submit, a host signal) or until_ns. */
+static inline void
+MALI_PER_ARCH(queue_sleep)(struct mali_device *dev, int64_t until_ns)
+{
+   struct timespec ts = {
+      .tv_sec = until_ns / 1000000000ll,
+      .tv_nsec = until_ns % 1000000000ll,
+   };
+   pthread_cond_timedwait(&dev->cond, &dev->lock, &ts);
+}
 
 /* ---------------------------------------------------------------------- */
 /* Sync files (mali_sync_file.c)                                           */

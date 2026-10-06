@@ -168,6 +168,24 @@ libmali_vk = static_library(
   gnu_symbol_visibility : 'hidden',
 )
 
+# The job-manager (v9, Mali-G57) back half: its queue, submit and sync
+# files, and mali_sync.c a second time, at PAN_ARCH 9 (design doc §2.1).
+# Linked into the driver next to libmali_vk; the device's arch picks which
+# back half a VkDevice uses (mali_device.c).
+libmali_vk_v9 = static_library(
+  'mali_vk_v9',
+  files('vk/mali_jm_cmd_buffer.c', 'vk/mali_jm_queue.c', 'vk/mali_jm_sync_file.c',
+        'vk/mali_sync.c'),
+  mali_entrypoints[0],   # the header only; the tables are libmali_vk's
+  include_directories : [inc_include, inc_src, inc_libmali, include_directories('vk'),
+                         include_directories('measurement')],
+  c_args : [pre_args, libmali_c_args, '-DPAN_ARCH=9',
+            '-DMALI_VERSION_STRING="@0@"'.format(meson.project_version())],
+  dependencies : [idep_vulkan_lite_runtime_headers, idep_vulkan_util_headers,
+                  idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+
 _waist_variants = {}
 foreach measure : [false, true]
   _waist_variants += {measure.to_string() : static_library(
@@ -183,7 +201,7 @@ endforeach
 # For the driver .so and the tests: the front half, the runtime, kbase, the
 # compiler. The waist behaviour is added by the user of the dependency.
 idep_mali_vk = declare_dependency(
-  link_whole : [libmali_vk],
+  link_whole : [libmali_vk, libmali_vk_v9],
   link_with : [libmali_kbase, libpanfrost_pixel_format],
   sources : [mali_entrypoints[0]],
   include_directories : [inc_libmali, include_directories('vk'),

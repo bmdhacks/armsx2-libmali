@@ -65,20 +65,25 @@ queue_init(struct mali_device *dev, struct mali_queue *queue,
    VkResult result = vk_queue_init(&queue->vk, &dev->vk, info, index);
    if (result != VK_SUCCESS)
       return result;
-   /* The queue group, its rings and the tiler heap (mali_queue.c). */
-   result = mali_csf_queue_init(dev, queue);
+   /* CSF: the queue group, its rings and the tiler heap (mali_queue.c).
+    * Job manager: the slot-order and submission state (mali_jm_queue.c). */
+   const bool jm = mali_device_physical(dev)->arch == 9;
+   result = jm ? mali_v9_queue_init(dev, queue) : mali_csf_queue_init(dev, queue);
    if (result != VK_SUCCESS) {
       vk_queue_finish(&queue->vk);
       return result;
    }
-   queue->vk.driver_submit = mali_queue_submit;
+   queue->vk.driver_submit = jm ? mali_v9_queue_submit : mali_queue_submit;
    return VK_SUCCESS;
 }
 
 static void
 queue_finish(struct mali_device *dev, struct mali_queue *queue)
 {
-   mali_csf_queue_finish(dev, queue);
+   if (queue->jm)
+      mali_v9_queue_finish(dev, queue);
+   else
+      mali_csf_queue_finish(dev, queue);
    vk_queue_finish(&queue->vk);
 }
 
@@ -90,8 +95,11 @@ device_destroy(struct mali_device *dev, const VkAllocationCallbacks *alloc)
    for (uint32_t i = 0; i < dev->queue_count; i++)
       queue_finish(dev, &dev->queues[i]);
    /* Command-stream state: event thread (CSF-specific; mali_csf_device
-    * itself). */
-   mali_csf_device_finish(dev);
+    * itself), or the job-manager state. */
+   if (dev->jm)
+      mali_v9_device_finish(dev);
+   else
+      mali_csf_device_finish(dev);
    /* Frontend-neutral device state: command memory, internal shaders
     * (their code lives in the pools below), the sync lock/condition. */
    device_fe_state_finish(dev);
@@ -206,9 +214,15 @@ mali_CreateDevice(VkPhysicalDevice physicalDevice,
       device_destroy(dev, pAllocator);
       return result;
    }
-   /* Command buffers and the queue's shared state. */
-   dev->vk.command_buffer_ops = &mali_cmd_buffer_ops;
-   result = mali_csf_device_init(dev);
+   /* Command buffers and the queue's shared state: the frontend the
+    * physical device's arch has (CSF on v11, the job manager on v9). */
+   if (pdev->arch == 9) {
+      dev->vk.command_buffer_ops = &mali_v9_cmd_buffer_ops;
+      result = mali_v9_device_init(dev);
+   } else {
+      dev->vk.command_buffer_ops = &mali_cmd_buffer_ops;
+      result = mali_csf_device_init(dev);
+   }
    if (result != VK_SUCCESS) {
       device_destroy(dev, pAllocator);
       return result;

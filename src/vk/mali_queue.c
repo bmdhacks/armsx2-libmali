@@ -618,7 +618,7 @@ mali_csf_queue_finish(struct mali_device *dev, struct mali_queue *queue)
 static struct mali_sync *
 to_mali_sync(struct vk_sync *s)
 {
-   assert(s->type == &mali_sync_type);
+   assert(s->type == &MALI_PER_ARCH(sync_type));
    return container_of(s, struct mali_sync, vk);
 }
 
@@ -936,11 +936,11 @@ mali_queue_submit(struct vk_queue *vkq, struct vk_queue_submit *submit)
    for (uint32_t i = 0; i < submit->wait_count; i++) {
       struct mali_sync *s = to_mali_sync(submit->waits[i].sync);
       if (!(s->vk.flags & VK_SYNC_IS_TIMELINE))
-         mali_sync_clear(s);
+         MALI_PER_ARCH(sync_clear)(s);
    }
    for (uint32_t i = 0; i < submit->signal_count; i++) {
       struct mali_sync *s = to_mali_sync(submit->signals[i].sync);
-      mali_sync_clear(s);
+      MALI_PER_ARCH(sync_clear)(s);
       s->submitted = true;
       memcpy(s->req, q->last_signal, sizeof(s->req));
    }

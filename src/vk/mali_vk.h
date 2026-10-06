@@ -87,6 +87,8 @@ void mali_kbase_log_to_vk(void *user, const char *msg);
 
 struct mali_csf_queue;
 struct mali_csf_device;
+struct mali_jm_queue;
+struct mali_jm_device;
 struct mali_measure;
 struct mali_shader;
 
@@ -107,9 +109,11 @@ struct mali_queue {
    struct vk_queue vk;
    /* Queue group, rings, submit state (mali_queue.h). */
    struct mali_csf_queue *csf;
-   /* Same object as csf above, untyped: lets frontend-neutral code (none
-    * yet) hold a queue pointer without the CSF type. Set alongside csf;
-    * the CSF (and, later, JM) queue-init path owns both. */
+   /* Job-manager submit state (mali_jm.h), on a v9 device instead. */
+   struct mali_jm_queue *jm;
+   /* Same object as csf or jm above, untyped: lets frontend-neutral code
+    * hold a queue pointer without the frontend's type. Set by the
+    * frontend's queue-init path. */
    void *fe;
 };
 
@@ -174,8 +178,11 @@ struct mali_device {
     * once that frontend exists. Scoreboard facts, the event thread, the
     * queue group and the kcpu queue stay inside it (mali_queue.h). */
    struct mali_csf_device *csf;
-   /* Same object as csf above, untyped: lets frontend-neutral code hold a
-    * device pointer without the CSF type. Set alongside csf. */
+   /* The job-manager state on a v9 device (mali_jm.h): atom numbers,
+    * on-demand event reading, the sync-file stream. */
+   struct mali_jm_device *jm;
+   /* Same object as csf or jm above, untyped: lets frontend-neutral code
+    * hold a device pointer without the frontend's type. */
    void *fe;
 
    /* Timing and command-stream capture (src/measurement/); NULL unless
@@ -198,6 +205,34 @@ struct mali_device {
 };
 
 VK_DEFINE_HANDLE_CASTS(mali_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
+
+/*
+ * The v9 (job-manager) back half, as code built once (mali_device.c,
+ * mali_physical_device.c) reaches it: device and queue setup
+ * (mali_jm_queue.c), command buffers (mali_jm_cmd_buffer.c) and the sync
+ * type (mali_sync.c built at v9). The v11 counterparts are in
+ * mali_queue.h and mali_cmd_buffer.h.
+ */
+struct vk_command_buffer_ops;
+struct vk_queue_submit;
+struct vk_sync_type;
+VkResult mali_v9_device_init(struct mali_device *dev);
+void mali_v9_device_finish(struct mali_device *dev);
+VkResult mali_v9_queue_init(struct mali_device *dev, struct mali_queue *queue);
+void mali_v9_queue_finish(struct mali_device *dev, struct mali_queue *queue);
+VkResult mali_v9_queue_submit(struct vk_queue *vkq, struct vk_queue_submit *submit);
+extern const struct vk_command_buffer_ops mali_v9_cmd_buffer_ops;
+extern const struct vk_sync_type mali_v9_sync_type;
+extern const struct vk_sync_type mali_v11_sync_type;
+
+/*
+ * Tests only: let physical-device enumeration accept a Mali-G57 (arch 9,
+ * job manager). The v9 back half has no command recording yet (design
+ * doc §16, G8-G10), so a real G57 is still skipped; host tests of the
+ * job-manager queue set this before creating an instance. Not exported
+ * from the driver .so.
+ */
+extern bool mali_jm_test_enable;
 
 static inline struct mali_physical_device *
 mali_device_physical(struct mali_device *dev)
