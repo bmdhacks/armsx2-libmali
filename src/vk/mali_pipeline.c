@@ -28,9 +28,17 @@
  * compiled vertex shader serves every pipeline that uses it.
  */
 
+#ifndef PAN_ARCH
+#error "mali_pipeline.c is built per arch: PAN_ARCH must be set"
+#endif
+
 #include "mali_blend.h"
 #include "mali_pipeline.h"
+#if PAN_ARCH >= 10
 #include "mali_cmd_buffer.h"
+#else
+#include "mali_jm.h"
+#endif
 #include "mali_vk.h"
 
 #include "mali_arch.h"
@@ -56,79 +64,6 @@
 #include "mali_measure.h"
 
 /* ---------------------------------------------------------------------- */
-/* Interned keys                                                           */
-
-struct key_entry {
-   uint32_t id;
-   uint32_t size;
-   uint8_t data[];
-};
-
-static uint32_t
-key_hash(const void *k)
-{
-   const struct key_entry *e = k;
-   return _mesa_hash_data(e->data, e->size);
-}
-
-static bool
-key_equal(const void *a, const void *b)
-{
-   const struct key_entry *x = a, *y = b;
-   return x->size == y->size && !memcmp(x->data, y->data, x->size);
-}
-
-void
-mali_device_keys_init(struct mali_device *dev)
-{
-   simple_mtx_init(&dev->keys.lock, mtx_plain);
-   dev->keys.table = _mesa_hash_table_create(NULL, key_hash, key_equal);
-   dev->keys.count = 0;
-}
-
-void
-mali_device_keys_finish(struct mali_device *dev)
-{
-   if (!dev->keys.table)
-      return;
-   hash_table_foreach(dev->keys.table, e)
-      free((void *)e->key);
-   _mesa_hash_table_destroy(dev->keys.table, NULL);
-   dev->keys.table = NULL;
-   simple_mtx_destroy(&dev->keys.lock);
-}
-
-uint32_t
-mali_device_intern_key(struct mali_device *dev, const void *data, size_t size)
-{
-   struct key_entry *k = malloc(sizeof(*k) + size);
-   if (!k || !dev->keys.table) {
-      free(k);
-      return 0;
-   }
-   k->size = size;
-   memcpy(k->data, data, size);
-
-   simple_mtx_lock(&dev->keys.lock);
-   uint32_t id = 0;
-   struct hash_entry *e = _mesa_hash_table_search(dev->keys.table, k);
-   if (e) {
-      id = ((const struct key_entry *)e->key)->id;
-      free(k);
-   } else {
-      k->id = ++dev->keys.count;
-      if (_mesa_hash_table_insert(dev->keys.table, k, NULL)) {
-         id = k->id;
-      } else {
-         dev->keys.count--;
-         free(k);
-      }
-   }
-   simple_mtx_unlock(&dev->keys.lock);
-   return id;
-}
-
-/* ---------------------------------------------------------------------- */
 /* Destruction and bind                                                    */
 
 static void
@@ -138,8 +73,8 @@ graphics_pipeline_destroy(struct vk_device *vk_dev, struct vk_pipeline *vk_pipel
    struct mali_device *dev = container_of(vk_dev, struct mali_device, vk);
    struct mali_graphics_pipeline *p = mali_graphics_pipeline(vk_pipeline);
 
-   mali_shader_unref(dev, p->vs);
-   mali_shader_unref(dev, p->fs);
+   MALI_PER_ARCH(shader_unref)(dev, p->vs);
+   MALI_PER_ARCH(shader_unref)(dev, p->fs);
    if (p->zsd_mem.size)
       mali_bo_pool_free(&dev->desc_pool, &p->zsd_mem);
    if (p->base.layout)
@@ -154,27 +89,29 @@ compute_pipeline_destroy(struct vk_device *vk_dev, struct vk_pipeline *vk_pipeli
    struct mali_device *dev = container_of(vk_dev, struct mali_device, vk);
    struct mali_compute_pipeline *p = mali_compute_pipeline(vk_pipeline);
 
-   mali_shader_unref(dev, p->cs);
+   MALI_PER_ARCH(shader_unref)(dev, p->cs);
    if (p->base.layout)
       vk_pipeline_layout_unref(vk_dev, p->base.layout);
    vk_pipeline_free(vk_dev, alloc, vk_pipeline);
 }
 
-void
-mali_pipeline_cmd_bind(struct vk_command_buffer *cmd, struct vk_pipeline *pipeline)
+/* The pipeline ops' bind (the runtime's vkCmdBindPipeline would call it;
+ * the per-arch CmdBindPipeline entry point replaces that). The
+ * dynamic-state part of a graphics bind is mali_cmd_bind_graphics'. */
+static void
+pipeline_cmd_bind(struct vk_command_buffer *cmd, struct vk_pipeline *pipeline)
 {
-   /* The dynamic-state part of a graphics bind is mali_cmd_bind_graphics'. */
-   mali_cmd_bind_pipeline(container_of(cmd, struct mali_cmd_buffer, vk), pipeline);
+   MALI_PER_ARCH(cmd_bind_pipeline)(container_of(cmd, struct mali_cmd_buffer, vk), pipeline);
 }
 
 static const struct vk_pipeline_ops graphics_pipeline_ops = {
    .destroy = graphics_pipeline_destroy,
-   .cmd_bind = mali_pipeline_cmd_bind,
+   .cmd_bind = pipeline_cmd_bind,
 };
 
 static const struct vk_pipeline_ops compute_pipeline_ops = {
    .destroy = compute_pipeline_destroy,
-   .cmd_bind = mali_pipeline_cmd_bind,
+   .cmd_bind = pipeline_cmd_bind,
 };
 
 /* ---------------------------------------------------------------------- */
@@ -234,7 +171,7 @@ stage_lookup(struct mali_device *dev, struct vk_pipeline_cache *cache, struct st
 
    struct vk_pipeline_cache_object *obj =
       vk_pipeline_cache_lookup_object(cache, st->key, sizeof(st->key),
-                                      &mali_shader_cache_ops, &st->cache_hit);
+                                      &MALI_PER_ARCH(shader_cache_ops), &st->cache_hit);
    if (!obj) {
       st->cache_hit = false;
       return false;
@@ -281,16 +218,17 @@ stage_to_nir(struct mali_device *dev, VkPipelineCreateFlags2KHR flags, struct st
                        mesa_shader_stage_name(vk_to_mesa_shader_stage(st->info->stage)));
 
    const mesa_shader_stage stage = vk_to_mesa_shader_stage(st->info->stage);
-   const struct spirv_to_nir_options spirv_options = mali_shader_spirv_options(&st->rs);
+   const struct spirv_to_nir_options spirv_options = MALI_PER_ARCH(shader_spirv_options)(&st->rs);
    VkResult result =
       vk_pipeline_shader_stage_to_nir(&dev->vk, flags, st->info, &spirv_options,
-                                      mali_shader_nir_options(dev, stage), NULL, &st->nir);
+                                      MALI_PER_ARCH(shader_nir_options)(dev, stage), NULL,
+                                      &st->nir);
    if (result != VK_SUCCESS)
       return vk_errorf(dev, VK_ERROR_INVALID_SHADER_NV,
                        "the %s stage's SPIR-V was rejected by the SPIR-V front end",
                        mesa_shader_stage_name(stage));
 
-   mali_shader_preprocess(dev, st->nir);
+   MALI_PER_ARCH(shader_preprocess)(dev, st->nir);
    return VK_SUCCESS;
 }
 
@@ -365,7 +303,7 @@ stage_compile(struct mali_device *dev, struct vk_pipeline_cache *cache,
    st->nir = NULL; /* consumed */
 
    struct mali_shader *shader;
-   result = mali_shader_compile(dev, &info, st->key, &shader);
+   result = MALI_PER_ARCH(shader_compile)(dev, &info, st->key, &shader);
    if (result != VK_SUCCESS)
       return result;
    p_atomic_inc(&dev->pipeline_stats.shaders_compiled);
@@ -386,7 +324,7 @@ stage_finish(struct mali_device *dev, struct stage *st)
 {
    ralloc_free(st->nir);
    st->nir = NULL;
-   mali_shader_unref(dev, st->shader);
+   MALI_PER_ARCH(shader_unref)(dev, st->shader);
    st->shader = NULL;
 }
 
@@ -743,8 +681,8 @@ create_graphics_pipeline(struct mali_device *dev, VkPipelineCache cache_handle,
       .fs = p->fs,
       .view_mask = view_mask,
    };
-   mali_gfx_pack_state(&pack, &p->baked);
-   mali_blend_shaders_prepare(dev, p);
+   MALI_PER_ARCH(gfx_pack_state)(&pack, &p->baked);
+   MALI_PER_ARCH(blend_shaders_prepare)(dev, p);
 
    result = fill_bind(dev, p);
    if (result != VK_SUCCESS) {

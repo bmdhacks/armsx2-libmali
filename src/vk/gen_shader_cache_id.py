@@ -42,6 +42,7 @@ EXCLUDE_FILES = {
     'src/vk/mali_descriptor_set.c',
     'src/vk/mali_device_memory.c',
     'src/vk/mali_fb.c',
+    'src/vk/mali_format_table.c',
     'src/vk/mali_formats.c',
     'src/vk/mali_icd.c',
     'src/vk/mali_icd.sym',

@@ -4,15 +4,18 @@
  */
 
 /*
- * vkCreateSampler / vkDestroySampler: the v11 Sampler descriptor, packed
- * once at creation as panvk does (panvk_vX_sampler.c, MIT). The blob packs
- * the same fields; the two value differences are settled in panvk's
- * favour (round-to-nearest-even, and the compare function of a
+ * vkCreateSampler / vkDestroySampler: the Sampler descriptor, packed once
+ * at creation as panvk does (panvk_vX_sampler.c, MIT), built per arch. The
+ * blob packs the same fields; the two value differences are settled in
+ * panvk's favour (round-to-nearest-even, and the compare function of a
  * non-comparison sampler). No YCbCr conversion, no custom border colours
- * (neither is advertised).
+ * (neither is advertised). v9's Sampler has no reduction mode (min/max
+ * filtering is not advertised there).
  */
 
-#define PAN_ARCH MALI_PAN_ARCH
+#ifndef PAN_ARCH
+#error "mali_sampler.c is built per arch: PAN_ARCH must be set"
+#endif
 
 #include "mali_vk.h"
 #include "mali_arch.h"
@@ -71,6 +74,7 @@ compare_func(const VkSamplerCreateInfo *info)
    }
 }
 
+#if PAN_ARCH >= 10
 static enum mali_reduction_mode
 reduction_mode(VkSamplerReductionMode mode)
 {
@@ -83,6 +87,7 @@ reduction_mode(VkSamplerReductionMode mode)
       return MALI_REDUCTION_MODE_AVERAGE;
    }
 }
+#endif
 
 static void
 pack_sampler(const struct mali_sampler *sampler, const VkSamplerCreateInfo *info,
@@ -123,7 +128,11 @@ pack_sampler(const struct mali_sampler *sampler, const VkSamplerCreateInfo *info
          cfg.maximum_anisotropy = MIN2((unsigned)info->maxAnisotropy, 16);
          cfg.lod_algorithm = MALI_LOD_ALGORITHM_ANISOTROPIC;
       }
+#if PAN_ARCH >= 10
       cfg.reduction_mode = reduction_mode(sampler->vk.reduction_mode);
+#else
+      assert(sampler->vk.reduction_mode == VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE);
+#endif
    }
 }
 
@@ -162,7 +171,7 @@ MALI_PER_ARCH(DestroySampler)(VkDevice _device, VkSampler _sampler,
 }
 
 void
-mali_pack_dummy_sampler(void *out)
+MALI_PER_ARCH(pack_dummy_sampler)(void *out)
 {
    pan_cast_and_pack(out, SAMPLER, cfg) {
       cfg.clamp_integer_array_indices = false;

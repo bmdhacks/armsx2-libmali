@@ -5,15 +5,17 @@
 
 /*
  * Compiled shaders: one pipeline stage taken from NIR through panvk-style
- * lowering and kraid to v11 machine code, uploaded to the device's
- * executable pool, with its Shader Program Descriptors (SPDs) built.
+ * lowering and kraid to v9 or v11 machine code (mali_shader.c is built per
+ * arch), uploaded to the device's executable pool, with its Shader Program
+ * Descriptors (SPDs) built.
  *
  * A mali_shader is a pipeline cache object: pipelines share them through
  * the application's VkPipelineCache or the device's own in-memory cache,
  * and they are serialized into vkGetPipelineCacheData.
  *
- * The resource model is panvk's for v11, because the shaders come from
- * Mesa's compiler and that is the model its lowering produces:
+ * The resource model is panvk's for v9+ (the same on both arches), because
+ * the shaders come from Mesa's compiler and that is the model its lowering
+ * produces:
  *
  *  - FAU (fast access uniforms, 64 words of 64 bits) hold, in this order,
  *    the system values the shader uses and then the push-constant words it
@@ -38,6 +40,7 @@
 #include "util/bitset.h"
 #include "util/mesa-blake3.h"
 
+#include "mali_arch.h"
 #include "mali_bo_pool.h"
 #include "mali_descriptor_set_layout.h"
 
@@ -168,7 +171,14 @@ struct mali_ubo_push_word {
  * constants after them.
  *
  * Pushed uniform-buffer words come from dynamic uniform buffers, fragment
- * shaders only.
+ * shaders only, and only on v11: the draw copies them into the FAU block
+ * with command-stream loads and stores, which the v9 job manager does not
+ * have, so v9 shaders load from the buffer (ubo_push_count 0).
+ *
+ * The block's GPU address and total_count reach the hardware as one FAU
+ * word on v11 (address | count << 56, the FAU register) and as the Shader
+ * Environment's separate FAU pointer and FAU count fields on v9, where a
+ * count of 0 drops the uniforms.
  */
 struct mali_shader_fau {
    BITSET_DECLARE(used_sysvals, MALI_MAX_SYSVAL_FAUS);
@@ -262,8 +272,8 @@ struct mali_shader {
    uint32_t bin_size;
 
    /* Fragment shaders with pushed uniform-buffer words from one dynamic
-    * buffer: the command-stream words that copy them into the draw's FAU
-    * block (mali_cmd_draw.c), built at upload. The draw puts the buffer
+    * buffer (v11 only): the command-stream words that copy them into the
+    * draw's FAU block (mali_cmd_draw.c), built at upload. The draw puts the buffer
     * address in MALI_UBO_COPY_SRC and the FAU block's in MALI_UBO_COPY_DST
     * first; valid while the binding covers bytes [0, end). count 0: no
     * such words, or the draw copies them another way. */
@@ -286,11 +296,14 @@ mali_shader_code_va(const struct mali_shader *s)
    return s ? s->code.gpu_va : 0;
 }
 
-/* The cache object operations; also the physical device's
- * pipeline_cache_import_ops entry. */
-extern const struct vk_pipeline_cache_object_ops mali_shader_cache_ops;
-/* NULL-terminated list for vk_physical_device::pipeline_cache_import_ops. */
-extern const struct vk_pipeline_cache_object_ops *const mali_pipeline_cache_import_ops[];
+/* The cache object operations, per arch (a v9 shader object uploads and
+ * builds v9 SPDs); also the physical device's pipeline_cache_import_ops
+ * entry. */
+extern const struct vk_pipeline_cache_object_ops mali_v9_shader_cache_ops;
+extern const struct vk_pipeline_cache_object_ops mali_v11_shader_cache_ops;
+/* NULL-terminated lists for vk_physical_device::pipeline_cache_import_ops. */
+extern const struct vk_pipeline_cache_object_ops *const mali_v9_pipeline_cache_import_ops[];
+extern const struct vk_pipeline_cache_object_ops *const mali_v11_pipeline_cache_import_ops[];
 
 static inline struct mali_shader *
 mali_shader_ref(struct mali_shader *s)
@@ -299,13 +312,14 @@ mali_shader_ref(struct mali_shader *s)
    return s;
 }
 
-void mali_shader_unref(struct mali_device *dev, struct mali_shader *s);
+/* Drops a reference (s may be NULL); the last one frees the shader. */
+MALI_PER_ARCH_DECL(void, shader_unref, (struct mali_device *dev, struct mali_shader *s));
 
 /* NIR and SPIR-V options for the compile path. */
-const struct nir_shader_compiler_options *
-mali_shader_nir_options(struct mali_device *dev, mesa_shader_stage stage);
-struct spirv_to_nir_options
-mali_shader_spirv_options(const struct vk_pipeline_robustness_state *rs);
+MALI_PER_ARCH_DECL(const struct nir_shader_compiler_options *, shader_nir_options,
+                   (struct mali_device *dev, mesa_shader_stage stage));
+MALI_PER_ARCH_DECL(struct spirv_to_nir_options, shader_spirv_options,
+                   (const struct vk_pipeline_robustness_state *rs));
 
 struct mali_shader_compile_info {
    /* Consumed (freed) by mali_shader_compile whatever the result. */
@@ -325,7 +339,7 @@ struct mali_shader_compile_info {
 /* The generic lowering that depends only on the shader and the GPU
  * (panvk_preprocess_nir); run on the NIR from vtn before
  * mali_shader_compile. */
-void mali_shader_preprocess(struct mali_device *dev, nir_shader *nir);
+MALI_PER_ARCH_DECL(void, shader_preprocess, (struct mali_device *dev, nir_shader *nir));
 
 /*
  * Lower, compile with kraid, upload. A vertex shader reads the fragment
@@ -334,9 +348,9 @@ void mali_shader_preprocess(struct mali_device *dev, nir_shader *nir);
  * and its cache key is key. VK_ERROR_INVALID_SHADER_NV if the compiler
  * refuses the shader (logged).
  */
-VkResult mali_shader_compile(struct mali_device *dev,
-                             const struct mali_shader_compile_info *info,
-                             const blake3_hash key, struct mali_shader **out);
+MALI_PER_ARCH_DECL(VkResult, shader_compile,
+                   (struct mali_device *dev, const struct mali_shader_compile_info *info,
+                    const blake3_hash key, struct mali_shader **out));
 
 /* Driver-side NIR lowering entry points (mali_nir_*.c). */
 void mali_nir_lower_descriptors(nir_shader *nir,

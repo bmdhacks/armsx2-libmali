@@ -128,8 +128,25 @@ _vk_c_args = [
   '-DMALI_VERSION_STRING="@0@"'.format(meson.project_version()),
 ]
 
-# Everything of the front half except what the waist stubs do when called
-# (mali_waist.c), which the driver and the tests pick separately.
+# The files built once per GPU architecture:
+# descriptor, sampler, view, format-table, shader, blend-shader and
+# pipeline packing, and the command-buffer builders both back halves
+# share (mali_cmd_state.c, mali_fb.c, mali_cmd_meta_gfx.c). Each copy names
+# its functions mali_v9_* or mali_v11_* (MALI_PER_ARCH, vk/mali_arch.h).
+_vk_per_arch_files = files(
+  'vk/mali_blend.c', 'vk/mali_cmd_meta_gfx.c', 'vk/mali_cmd_state.c',
+  'vk/mali_descriptor_set.c', 'vk/mali_fb.c', 'vk/mali_format_table.c',
+  'vk/mali_image_view.c', 'vk/mali_pipeline.c', 'vk/mali_pipeline_state.c',
+  'vk/mali_sampler.c', 'vk/mali_shader.c',
+)
+_vk_inc = [inc_include, inc_src, inc_libmali, include_directories('vk'),
+           include_directories('measurement')]
+_vk_per_arch_deps = [idep_vulkan_lite_runtime_headers, idep_vulkan_util_headers,
+                     idep_mesautil, idep_nir_headers, idep_mali_compiler]
+
+# Everything of the front half except the per-arch files and what the waist
+# stubs do when called (mali_waist.c), which the driver and the tests pick
+# separately. The command-stream (CSF) back half here is the v11 one.
 libmali_vk = static_library(
   'mali_vk',
   files('vk/mali_device.c', 'vk/mali_icd.c', 'vk/mali_instance.c',
@@ -137,22 +154,15 @@ libmali_vk = static_library(
   # Memory, buffers, images, formats.
   files('vk/mali_buffer.c', 'vk/mali_device_memory.c', 'vk/mali_formats.c',
         'vk/mali_image.c', 'vk/mali_image_layout.c'),
-  # Shaders, pipelines, descriptor set layouts.
+  # Shader lowering and memory pools, descriptor set layouts.
   files('vk/mali_bo_pool.c', 'vk/mali_descriptor_set_layout.c',
-        'vk/mali_nir_lower_descriptors.c', 'vk/mali_nir_lower_input_attachments.c',
-        'vk/mali_pipeline.c', 'vk/mali_pipeline_state.c', 'vk/mali_shader.c'),
-  # Samplers, image/buffer view descriptors, descriptor pools and sets.
-  files('vk/mali_descriptor_set.c', 'vk/mali_image_view.c', 'vk/mali_sampler.c'),
+        'vk/mali_nir_lower_descriptors.c', 'vk/mali_nir_lower_input_attachments.c'),
   # Command buffers, the CSF queue, submit and sync.
   files('vk/mali_cmd_buffer.c', 'vk/mali_cmd_copy.c', 'vk/mali_cmd_dispatch.c',
         'vk/mali_queue.c', 'vk/mali_sync.c'),
-  # Render passes, draws, image transfers. mali_cmd_state.c and mali_fb.c
-  # (with mali_cmd_state.h) are the parts the job-manager back half will
-  # share.
-  files('vk/mali_cmd_draw.c', 'vk/mali_cmd_image.c', 'vk/mali_cmd_meta_gfx.c',
-        'vk/mali_cmd_render.c', 'vk/mali_cmd_state.c', 'vk/mali_fb.c'),
-  # Blend shaders.
-  files('vk/mali_blend.c'),
+  # Render passes, draws, image transfers (the CSF side; the shared builders
+  # are per-arch files).
+  files('vk/mali_cmd_draw.c', 'vk/mali_cmd_image.c', 'vk/mali_cmd_render.c'),
   # Sync files and the Android window system; mali_android.c only on Android.
   files('vk/mali_sync_file.c', 'vk/mali_wsi.c'),
   with_platform_android ? files('vk/mali_android.c') : [],
@@ -168,21 +178,33 @@ libmali_vk = static_library(
   gnu_symbol_visibility : 'hidden',
 )
 
+# The per-arch files at v11, for the G615 (mali_v11_*).
+libmali_vk_v11 = static_library(
+  'mali_vk_v11',
+  _vk_per_arch_files,
+  mali_entrypoints[0],   # the header only; the tables are libmali_vk's
+  include_directories : _vk_inc,
+  c_args : [pre_args, libmali_c_args, '-DPAN_ARCH=11', '-DMALI_PAN_ARCH=11'],
+  dependencies : [_vk_per_arch_deps, idep_pan_format_by_arch['11'],
+                  idep_pan_packers_by_arch['11']],
+  gnu_symbol_visibility : 'hidden',
+)
+
 # The job-manager (v9, Mali-G57) back half: its queue, submit and sync
-# files, and mali_sync.c a second time, at PAN_ARCH 9 (design doc §2.1).
-# Linked into the driver next to libmali_vk; the device's arch picks which
-# back half a VkDevice uses (mali_device.c).
+# files, mali_sync.c and mali_wsi.c a second time, and the per-arch files,
+# at PAN_ARCH 9. Linked into the driver next to libmali_vk; the device's
+# arch picks which back half a VkDevice uses (mali_device.c).
 libmali_vk_v9 = static_library(
   'mali_vk_v9',
   files('vk/mali_jm_cmd_buffer.c', 'vk/mali_jm_queue.c', 'vk/mali_jm_sync_file.c',
         'vk/mali_sync.c', 'vk/mali_wsi.c'),
+  _vk_per_arch_files,
   mali_entrypoints[0],   # the header only; the tables are libmali_vk's
-  include_directories : [inc_include, inc_src, inc_libmali, include_directories('vk'),
-                         include_directories('measurement')],
+  include_directories : _vk_inc,
   c_args : [pre_args, libmali_c_args, '-DPAN_ARCH=9',
             '-DMALI_VERSION_STRING="@0@"'.format(meson.project_version())],
-  dependencies : [idep_vulkan_lite_runtime_headers, idep_vulkan_util_headers,
-                  idep_mesautil],
+  dependencies : [_vk_per_arch_deps, idep_pan_format_by_arch['9'],
+                  idep_pan_packers_by_arch['9']],
   gnu_symbol_visibility : 'hidden',
 )
 
@@ -201,8 +223,9 @@ endforeach
 # For the driver .so and the tests: the front half, the runtime, kbase, the
 # compiler. The waist behaviour is added by the user of the dependency.
 idep_mali_vk = declare_dependency(
-  link_whole : [libmali_vk, libmali_vk_v9],
-  link_with : [libmali_kbase, libpanfrost_pixel_format],
+  link_whole : [libmali_vk, libmali_vk_v11, libmali_vk_v9],
+  link_with : [libmali_kbase, libpanfrost_pixel_format_by_arch['11'],
+               libpanfrost_pixel_format_by_arch['9']],
   sources : [mali_entrypoints[0]],
   include_directories : [inc_libmali, include_directories('vk'),
                          include_directories('measurement')],

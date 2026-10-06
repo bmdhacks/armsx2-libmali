@@ -10,9 +10,15 @@
  * (panvk_vX_descriptor_set.c, panvk_vX_buffer_view.c, MIT) for what goes
  * into each slot, because Mesa's compiler reads the slots; pool memory
  * and accounting follow the blob.
+ *
+ * Built per arch. The one hardware difference: v9's Buffer descriptor has
+ * no size-hi word (v11 word 5), so buffer sizes are 32 bits there; the
+ * T820 blob writes the same v9 fields.
  */
 
-#define PAN_ARCH MALI_PAN_ARCH
+#ifndef PAN_ARCH
+#error "mali_descriptor_set.c is built per arch: PAN_ARCH must be set"
+#endif
 
 #include "mali_vk.h"
 #include "mali_arch.h"
@@ -53,7 +59,7 @@ static_assert(pan_size(RESOURCE) == MALI_RESOURCE_SIZE, "descriptor size");
 /* Buffer views                                                            */
 
 /* A Buffer descriptor of type Structure over whole texels
- * (pan_buffer_texture_emit, v11). The conversion word is read by shader
+ * (pan_buffer_texture_emit). The conversion word is read by shader
  * code, not the hardware, so it comes from Mesa's format table like the
  * compiler's expectations. */
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -75,8 +81,13 @@ MALI_PER_ARCH(CreateBufferView)(VkDevice _device, const VkBufferViewCreateInfo *
    struct mali_buffer_packed desc;
    pan_pack(&desc, BUFFER, cfg) {
       cfg.buffer_type = MALI_BUFFER_TYPE_STRUCTURE;
+#if PAN_ARCH >= 10
       cfg.size = size & BITFIELD_MASK(32);
       cfg.size_hi = size >> 32;
+#else
+      /* 32 bits of size on v9: whole texels below 4 GiB. */
+      cfg.size = MIN2(size, (UINT32_MAX / stride) * (uint64_t)stride);
+#endif
       cfg.address = mali_buffer_gpu_va(buffer, pCreateInfo->offset);
       cfg.stride = stride;
       cfg.conversion.memory_format = GENX(pan_format_from_pipe_format)(pfmt)->hw;
@@ -175,15 +186,21 @@ write_image(const struct mali_descriptor_set *set, const VkDescriptorImageInfo *
 }
 
 /* Sizes are rounded up to 16 bytes (uniform) or 4 (storage), as panvk:
- * the compiler's bounds checks assume it (drift doc, "Buffer, Simple"). */
+ * the compiler's bounds checks assume it (drift doc, "Buffer, Simple").
+ * v9 has 32 bits of size: a larger range is clamped to the largest size
+ * the rounding allows (maxStorageBufferRange is below 4 GiB there). */
 static void
 pack_buffer(uint64_t addr, uint64_t range, bool ssbo, void *out)
 {
    const uint64_t size = align64(range, ssbo ? 4 : 16);
    pan_cast_and_pack(out, BUFFER, cfg) {
       cfg.address = addr;
+#if PAN_ARCH >= 10
       cfg.size = size & BITFIELD_MASK(32);
       cfg.size_hi = size >> 32;
+#else
+      cfg.size = MIN2(size, UINT32_MAX & ~(uint64_t)(ssbo ? 3 : 15));
+#endif
    }
 }
 
@@ -645,7 +662,7 @@ MALI_PER_ARCH(FreeDescriptorSets)(VkDevice _device, VkDescriptorPool _pool, uint
 /* Binding (for the command buffer)                                        */
 
 void
-mali_descriptor_set_pack_resource(const struct mali_descriptor_set *set, void *out)
+MALI_PER_ARCH(descriptor_set_pack_resource)(const struct mali_descriptor_set *set, void *out)
 {
    pan_cast_and_pack(out, RESOURCE, cfg) {
       if (set && set->gpu) {
@@ -661,8 +678,8 @@ mali_descriptor_set_pack_resource(const struct mali_descriptor_set *set, void *o
 }
 
 void
-mali_descriptor_set_pack_dyn_buf(const struct mali_descriptor_set *set, uint32_t idx,
-                                 uint32_t dynamic_offset, void *out)
+MALI_PER_ARCH(descriptor_set_pack_dyn_buf)(const struct mali_descriptor_set *set, uint32_t idx,
+                                           uint32_t dynamic_offset, void *out)
 {
    assert(idx < set->layout->dyn_buf_count);
    pack_buffer(set->dyn_bufs[idx].addr + dynamic_offset, set->dyn_bufs[idx].range,

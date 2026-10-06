@@ -53,6 +53,8 @@
 #error "mali_jm.h is the v9 (job manager) back half: build with PAN_ARCH=9"
 #endif
 #include "mali_arch.h"
+#include "mali_cmd_gfx.h"
+#include "mali_shader.h"
 #include "mali_vk.h"
 
 /* Job slots (kbase_js_get_slot): fragment work runs on slot 0, everything
@@ -111,14 +113,74 @@ struct mali_jm_cmd {
    struct util_dynarray frags;   /* struct mali_jm_frag_seg */
 };
 
-/* The v9 command buffer. G7 holds only what submit needs; the recording
- * state (slabs, descriptor and draw state, the draw template) comes with
- * the command-buffer unit (G8). */
+/*
+ * The v9 command buffer: what submit reads (jm), and the recording state
+ * the builders shared with the v11 back half read, under the same member
+ * names as the v11 struct (mali_cmd_state.h lists them). The job-chain
+ * recording state (chains being written, the draw template) is to come.
+ */
 struct mali_cmd_buffer {
    struct vk_command_buffer vk;
    struct mali_device *dev;
    struct mali_jm_cmd jm;
+
+   /* GPU memory: slabs in use, the one being filled (mali_cmd_alloc). */
+   struct list_head slabs;
+   struct mali_cmd_slab *cur;
+   uint64_t cur_offset;
+   uint8_t *cur_cpu;
+   uint64_t cur_gpu;
+
+   uint8_t push_constants[MALI_MAX_PUSH_CONSTANTS_SIZE];
+
+   /* Storage behind vk.dynamic_graphics_state.vi / .ms.sample_locations. */
+   struct vk_vertex_input_state dyn_vi;
+   struct vk_sample_locations_state dyn_sl;
+
+   struct {
+      const struct mali_shader *shader;
+      struct mali_desc_state desc;
+   } compute;
+
+   struct {
+      struct mali_desc_state desc;
+      /* regs/regs_valid are the v11 register record; unused here. */
+      struct mali_gfx_draw_state draw;
+      struct mali_render_state render;
+   } gfx;
+
+   /* Thread-local storage shared by every job of the command buffer. */
+   struct {
+      uint32_t size;
+      uint64_t gpu;
+   } tls;
+
+   uint32_t dispatches;
+   uint32_t draws;
+   uint32_t passes;
 };
+
+VK_DEFINE_HANDLE_CASTS(mali_cmd_buffer, vk.base, VkCommandBuffer,
+                       VK_OBJECT_TYPE_COMMAND_BUFFER)
+
+/* size bytes of CPU-mapped, CPU-uncached GPU memory at a multiple of align
+ * (a power of two), alive until the command buffer is reset; {0} with the
+ * command buffer's error set on failure. The same as the v11 one
+ * (mali_cmd_buffer.h). */
+static inline struct mali_ptr
+mali_cmd_alloc(struct mali_cmd_buffer *cmd, uint64_t size, uint64_t align)
+{
+   const uint64_t off = (cmd->cur_offset + align - 1) & ~(align - 1);
+   if (likely(cmd->cur_cpu && size && size <= MALI_CMD_SLAB_SIZE / 2 &&
+              off + size <= MALI_CMD_SLAB_SIZE)) {
+      cmd->cur_offset = off + size;
+      return (struct mali_ptr){cmd->cur_cpu + off, cmd->cur_gpu + off};
+   }
+   return MALI_PER_ARCH(cmd_alloc_slow)(cmd, size, align);
+}
+
+/* vkCmdBindPipeline, and the pipeline ops' bind (mali_pipeline.c). */
+void MALI_PER_ARCH(cmd_bind_pipeline)(struct mali_cmd_buffer *cmd, struct vk_pipeline *pipeline);
 
 extern const struct vk_command_buffer_ops MALI_PER_ARCH(cmd_buffer_ops);
 

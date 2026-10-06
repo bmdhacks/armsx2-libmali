@@ -120,7 +120,7 @@ dispatch_copy(struct mali_cmd_buffer *cmd, const struct copy_surface *src, int s
       vk_logw(VK_LOG_OBJS(cmd), "libmali: copies of %u-byte blocks are not supported", bytes);
       return;
    }
-   const struct mali_shader *s = mali_meta_copy_get(cmd, util_logbase2(bytes));
+   const struct mali_shader *s = MALI_PER_ARCH(meta_copy_get)(cmd, util_logbase2(bytes));
    if (!s)
       return;
 
@@ -265,12 +265,12 @@ copy_to_afbc(struct mali_cmd_buffer *cmd, const struct mali_image *img, unsigned
    uint32_t tex[2][8];
    unsigned ntex = 0;
    if (src->img &&
-       !mali_cmd_pack_plane_texture(cmd, src->img, src->plane,
-                                    copy_read_format(src->img, src->plane), src->level,
-                                    src->layer, layers, tex[ntex++]))
+       !MALI_PER_ARCH(cmd_pack_plane_texture)(cmd, src->img, src->plane,
+                                              copy_read_format(src->img, src->plane), src->level,
+                                              src->layer, layers, tex[ntex++]))
       goto oom;
-   if (!mali_cmd_pack_plane_texture(cmd, img, plane, copy_read_format(img, plane), level,
-                                    layer, layers, tex[ntex++]))
+   if (!MALI_PER_ARCH(cmd_pack_plane_texture)(cmd, img, plane, copy_read_format(img, plane), level,
+                                              layer, layers, tex[ntex++]))
       goto oom;
 
    const struct mali_render_blit blit = {
@@ -297,8 +297,8 @@ copy_to_afbc(struct mali_cmd_buffer *cmd, const struct mali_image *img, unsigned
       .store = true,
       .always_write = true,
    };
-   mali_cmd_render_begin(cmd, &d);
-   mali_cmd_render_end(cmd);
+   MALI_PER_ARCH(cmd_render_begin)(cmd, &d);
+   MALI_PER_ARCH(cmd_render_end)(cmd);
    return;
 
 oom:
@@ -315,13 +315,13 @@ copy_from_afbc(struct mali_cmd_buffer *cmd, const struct mali_image *img, unsign
    if (!w || !h || !layers)
       return;
    const unsigned elem = util_format_get_blocksize(img->planes[plane].format);
-   const struct mali_shader *s = mali_meta_copy_tex_get(cmd, util_logbase2(elem));
+   const struct mali_shader *s = MALI_PER_ARCH(meta_copy_tex_get)(cmd, util_logbase2(elem));
    if (!s)
       return;
 
    uint32_t tex[8];
-   if (!mali_cmd_pack_plane_texture(cmd, img, plane, copy_read_format(img, plane), level,
-                                    layer, layers, tex)) {
+   if (!MALI_PER_ARCH(cmd_pack_plane_texture)(cmd, img, plane, copy_read_format(img, plane), level,
+                                              layer, layers, tex)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
       return;
    }
@@ -371,7 +371,7 @@ MALI_PER_ARCH(CmdCopyImage2)(VkCommandBuffer commandBuffer, const VkCopyImageInf
 
    for (uint32_t i = 0; i < info->regionCount; i++) {
       if (copy_touches_crc(dst, &info->pRegions[i].dstSubresource)) {
-         mali_cmd_crc_invalidate(cmd, dst);
+         MALI_PER_ARCH(cmd_crc_invalidate)(cmd, dst);
          break;
       }
    }
@@ -432,7 +432,7 @@ MALI_PER_ARCH(CmdCopyBufferToImage2)(VkCommandBuffer commandBuffer, const VkCopy
 
    for (uint32_t i = 0; i < info->regionCount; i++) {
       if (copy_touches_crc(img, &info->pRegions[i].imageSubresource)) {
-         mali_cmd_crc_invalidate(cmd, img);
+         MALI_PER_ARCH(cmd_crc_invalidate)(cmd, img);
          break;
       }
    }
@@ -505,8 +505,8 @@ clear_pass(struct mali_cmd_buffer *cmd, struct mali_render_desc *d, const struct
    d->width = u_minify(img->vk.extent.width, level);
    d->height = u_minify(img->vk.extent.height, level);
    d->area = (VkRect2D){{0, 0}, {d->width, d->height}};
-   mali_cmd_render_begin(cmd, d);
-   mali_cmd_render_end(cmd);
+   MALI_PER_ARCH(cmd_render_begin)(cmd, d);
+   MALI_PER_ARCH(cmd_render_end)(cmd);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -658,10 +658,12 @@ MALI_PER_ARCH(CmdBlitImage2)(VkCommandBuffer commandBuffer, const VkBlitImageInf
                 &push.blit_scale[1], &push.blit_offset[1]);
 
       uint32_t tex[2][8];
-      if (!mali_cmd_pack_plane_texture(cmd, src, 0, sfmt, slevel,
-                                       r->srcSubresource.baseArrayLayer, layers, tex[0]) ||
-          !mali_cmd_pack_plane_texture(cmd, dst, 0, dfmt, dlevel,
-                                       r->dstSubresource.baseArrayLayer, layers, tex[1])) {
+      if (!MALI_PER_ARCH(cmd_pack_plane_texture)(cmd, src, 0, sfmt, slevel,
+                                                 r->srcSubresource.baseArrayLayer, layers,
+                                                 tex[0]) ||
+          !MALI_PER_ARCH(cmd_pack_plane_texture)(cmd, dst, 0, dfmt, dlevel,
+                                                 r->dstSubresource.baseArrayLayer, layers,
+                                                 tex[1])) {
          vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
          return;
       }
@@ -700,7 +702,7 @@ MALI_PER_ARCH(CmdBlitImage2)(VkCommandBuffer commandBuffer, const VkBlitImageInf
          .store = true,
          .always_write = true,
       };
-      mali_cmd_render_begin(cmd, &d);
-      mali_cmd_render_end(cmd);
+      MALI_PER_ARCH(cmd_render_begin)(cmd, &d);
+      MALI_PER_ARCH(cmd_render_end)(cmd);
    }
 }

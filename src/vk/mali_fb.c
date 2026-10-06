@@ -189,7 +189,7 @@ pack_clear_color(enum pipe_format f, const VkClearColorValue *v, uint32_t out[4]
 }
 
 void
-mali_pack_opaque_blend(enum pipe_format format, unsigned rt, uint32_t out[4])
+MALI_PER_ARCH(pack_opaque_blend)(enum pipe_format format, unsigned rt, uint32_t out[4])
 {
    pan_cast_and_pack(out, BLEND, cfg) {
       cfg.round_to_fb_precision = true;
@@ -242,7 +242,9 @@ select_tile_size(struct mali_cmd_buffer *cmd, struct mali_render_state *r)
    uint32_t tile = MIN2(rt_budget >> util_logbase2_ceil(rt_bytes), z_budget >> 2);
    if (tile < 16)
       tile *= 2;
-   tile = MIN2(tile, 32 * 32);   /* v10/v11 effective tile size limit */
+   /* The effective tile size limit (pan_max_effective_tile_size): 32x32 on
+    * v10/v11, 16x16 on v9. */
+   tile = MIN2(tile, PAN_ARCH >= 10 ? 32 * 32 : 16 * 16);
    r->tile_size = tile;
    r->cbuf_alloc = ALIGN_POT(rt_bytes * tile, 1024);
 
@@ -267,7 +269,7 @@ target_is_afbc(const struct mali_fb_target *t)
 }
 
 bool
-mali_fb_begin(struct mali_cmd_buffer *cmd, const struct mali_render_desc *desc)
+MALI_PER_ARCH(fb_begin)(struct mali_cmd_buffer *cmd, const struct mali_render_desc *desc)
 {
    struct mali_render_state *r = &cmd->gfx.render;
 
@@ -337,7 +339,7 @@ mali_fb_begin(struct mali_cmd_buffer *cmd, const struct mali_render_desc *desc)
 }
 
 bool
-mali_fb_pass_has_work(const struct mali_render_state *r)
+MALI_PER_ARCH(fb_pass_has_work)(const struct mali_render_state *r)
 {
    /* Nothing tiled and nothing cleared or border-loaded: the attachments
     * keep their contents, no fragment job is needed. */
@@ -356,12 +358,8 @@ mali_fb_pass_has_work(const struct mali_render_state *r)
 /* CRC (transaction elimination): which target keeps its CRCs              */
 
 /* The seed scheme and the fragment-side seed updates are described in
- * mali_cmd_render.c ("CRC"). */
-
-struct mali_crc_options mali_crc_options = {
-   .empty_tile_read = true,
-   .empty_tile_write = true,
-};
+ * mali_cmd_render.c ("CRC"). The knobs (mali_crc_options) are in
+ * mali_image.c, compiled once for both arches. */
 
 /* Can target t keep its CRCs in this pass? panvk pan_fb_store_target_
  * should_crc on v11: level 0 of an image with CRC state, stored, tiles of
@@ -536,9 +534,9 @@ build_frame_shaders(struct mali_cmd_buffer *cmd, struct mali_render_state *r,
                         util_format_is_pure_sint(t->format) ? MALI_META_FS_SINT :
                                                               MALI_META_FS_FLOAT;
       memcpy(push.clear_color[i], &r->desc.clear_color[i], 16);
-      if (!mali_cmd_pack_plane_texture(cmd, t->image, t->plane, t->format, t->level,
-                                       t->layer, MAX2(r->desc.layer_count, 1),
-                                       ctex[nctex++]))
+      if (!MALI_PER_ARCH(cmd_pack_plane_texture)(cmd, t->image, t->plane, t->format, t->level,
+                                                 t->layer, MAX2(r->desc.layer_count, 1),
+                                                 ctex[nctex++]))
          return false;
       color = true;
       color_always |= clears_in_area(t);
@@ -549,18 +547,18 @@ build_frame_shaders(struct mali_cmd_buffer *cmd, struct mali_render_state *r,
    if (zt->image && zt->preload) {
       zkey.z_op = zt->load == MALI_ATT_LOAD_CLEAR ? MALI_META_FS_CLEAR_IN_AREA
                                                   : MALI_META_FS_LOAD;
-      if (!mali_cmd_pack_plane_texture(cmd, zt->image, zt->plane, zt->format, zt->level,
-                                       zt->layer, MAX2(r->desc.layer_count, 1),
-                                       ztex[nztex++]))
+      if (!MALI_PER_ARCH(cmd_pack_plane_texture)(cmd, zt->image, zt->plane, zt->format, zt->level,
+                                                 zt->layer, MAX2(r->desc.layer_count, 1),
+                                                 ztex[nztex++]))
          return false;
       zs = true;
    }
    if (st->image && st->preload) {
       zkey.s_op = st->load == MALI_ATT_LOAD_CLEAR ? MALI_META_FS_CLEAR_IN_AREA
                                                   : MALI_META_FS_LOAD;
-      if (!mali_cmd_pack_plane_texture(cmd, st->image, st->plane, st->format, st->level,
-                                       st->layer, MAX2(r->desc.layer_count, 1),
-                                       ztex[nztex++]))
+      if (!MALI_PER_ARCH(cmd_pack_plane_texture)(cmd, st->image, st->plane, st->format, st->level,
+                                                 st->layer, MAX2(r->desc.layer_count, 1),
+                                                 ztex[nztex++]))
          return false;
       zs = true;
    }
@@ -575,26 +573,26 @@ build_frame_shaders(struct mali_cmd_buffer *cmd, struct mali_render_state *r,
 
    if (r->desc.blit) {
       const struct mali_render_blit *bl = r->desc.blit;
-      const struct mali_shader *fs = mali_meta_fs_get(cmd, bl->key);
-      if (!fs || !mali_meta_fs_dcd(cmd, fs, bl->key, bl->push, bl->textures,
-                                   bl->texture_count, bl->sampler, true,
-                                   (uint8_t *)p.cpu + FS_DCD_COLOR * pan_size(DRAW)))
+      const struct mali_shader *fs = MALI_PER_ARCH(meta_fs_get)(cmd, bl->key);
+      if (!fs || !MALI_PER_ARCH(meta_fs_dcd)(cmd, fs, bl->key, bl->push, bl->textures,
+                                             bl->texture_count, bl->sampler, true,
+                                             (uint8_t *)p.cpu + FS_DCD_COLOR * pan_size(DRAW)))
          return false;
       modes[FS_DCD_COLOR] = MALI_PRE_POST_FRAME_SHADER_MODE_ALWAYS;
    } else if (color) {
-      const struct mali_shader *fs = mali_meta_fs_get(cmd, &ckey);
-      if (!fs || !mali_meta_fs_dcd(cmd, fs, &ckey, &push, (const uint32_t(*)[8])ctex,
-                                   nctex, NULL, true,
-                                   (uint8_t *)p.cpu + FS_DCD_COLOR * pan_size(DRAW)))
+      const struct mali_shader *fs = MALI_PER_ARCH(meta_fs_get)(cmd, &ckey);
+      if (!fs || !MALI_PER_ARCH(meta_fs_dcd)(cmd, fs, &ckey, &push, (const uint32_t(*)[8])ctex,
+                                             nctex, NULL, true,
+                                             (uint8_t *)p.cpu + FS_DCD_COLOR * pan_size(DRAW)))
          return false;
       modes[FS_DCD_COLOR] = color_always ? MALI_PRE_POST_FRAME_SHADER_MODE_ALWAYS
                                          : MALI_PRE_POST_FRAME_SHADER_MODE_INTERSECT;
    }
    if (zs) {
-      const struct mali_shader *fs = mali_meta_fs_get(cmd, &zkey);
-      if (!fs || !mali_meta_fs_dcd(cmd, fs, &zkey, &push, (const uint32_t(*)[8])ztex,
-                                   nztex, NULL, true,
-                                   (uint8_t *)p.cpu + FS_DCD_ZS * pan_size(DRAW)))
+      const struct mali_shader *fs = MALI_PER_ARCH(meta_fs_get)(cmd, &zkey);
+      if (!fs || !MALI_PER_ARCH(meta_fs_dcd)(cmd, fs, &zkey, &push, (const uint32_t(*)[8])ztex,
+                                             nztex, NULL, true,
+                                             (uint8_t *)p.cpu + FS_DCD_ZS * pan_size(DRAW)))
          return false;
       /* Intersect: tiles without geometry keep their memory and need no
        * reload. panvk uses Early ZS Always (the reload runs a tile or more
@@ -658,7 +656,11 @@ pack_zs_ext(const struct mali_render_state *r, unsigned layer, uint64_t crc_clea
          cfg.zs.base = base;
          cfg.zs.row_stride = row;
          cfg.zs.surface_stride = (uint32_t)surf;
+#if PAN_ARCH >= 10
          cfg.zs.surface_stride_hi = (uint32_t)(surf >> 32);
+#else
+         assert(surf <= UINT32_MAX);
+#endif
       }
       pan_merge(&desc, &part, ZS_CRC_EXTENSION);
    }
@@ -685,7 +687,11 @@ pack_zs_ext(const struct mali_render_state *r, unsigned layer, uint64_t crc_clea
          cfg.s.base = base;
          cfg.s.row_stride = row;
          cfg.s.surface_stride = (uint32_t)surf;
+#if PAN_ARCH >= 10
          cfg.s.surface_stride_hi = (uint32_t)(surf >> 32);
+#else
+         assert(surf <= UINT32_MAX);
+#endif
       }
       pan_merge(&desc, &part, ZS_CRC_EXTENSION);
    }
@@ -724,7 +730,7 @@ pack_rt_afbc(const struct mali_render_state *r, const struct mali_fb_target *t, 
       cfg.header = header;
       cfg.body_offset = body;
       cfg.row_stride = row;
-      cfg.compression_mode = mali_image_afbc_hw_mode(t->image, t->plane);
+      cfg.compression_mode = MALI_PER_ARCH(image_afbc_hw_mode)(t->image, t->plane);
    }
 }
 
@@ -774,7 +780,11 @@ pack_rt(const struct mali_render_state *r, unsigned i, unsigned layer, void *out
       cfg.writeback_buffer.base = base;
       cfg.writeback_buffer.row_stride = row;
       cfg.writeback_buffer.surface_stride = (uint32_t)surf;
+#if PAN_ARCH >= 10
       cfg.writeback_buffer.surface_stride_hi = (uint32_t)(surf >> 32);
+#else
+      assert(surf <= UINT32_MAX);
+#endif
    }
 }
 
@@ -788,7 +798,8 @@ fix_frame_mode(enum mali_pre_post_frame_shader_mode mode, bool clean_tile)
 }
 
 uint64_t
-mali_fb_build(struct mali_cmd_buffer *cmd, struct mali_render_state *r, uint32_t *size_out)
+MALI_PER_ARCH(fb_build)(struct mali_cmd_buffer *cmd, struct mali_render_state *r,
+                        uint32_t *size_out)
 {
    const struct mali_fb_target *zt = &r->desc.z, *st = &r->desc.s;
    r->crc_rt = select_crc_rt(r);
@@ -889,11 +900,11 @@ mali_fb_build(struct mali_cmd_buffer *cmd, struct mali_render_state *r, uint32_t
 }
 
 void
-mali_fb_fill_tsd(struct mali_cmd_buffer *cmd, struct mali_render_state *r)
+MALI_PER_ARCH(fb_fill_tsd)(struct mali_cmd_buffer *cmd, struct mali_render_state *r)
 {
    if (!r->tsd_cpu)
       return;
-   uint64_t tls = r->tls_size ? mali_cmd_tls_buffer(cmd, r->tls_size) : 0;
+   uint64_t tls = r->tls_size ? MALI_PER_ARCH(cmd_tls_buffer)(cmd, r->tls_size) : 0;
    pan_cast_and_pack(r->tsd_cpu, LOCAL_STORAGE, cfg) {
       if (tls) {
          cfg.tls_size = util_logbase2_ceil(DIV_ROUND_UP(r->tls_size, 16));
@@ -1011,12 +1022,12 @@ MALI_PER_ARCH(CmdBeginRendering)(VkCommandBuffer commandBuffer, const VkRenderin
    d.height = MAX2(d.height, 1);
    d.layer_count = MAX2(d.layer_count, 1);
 
-   mali_cmd_render_begin(cmd, &d);
+   MALI_PER_ARCH(cmd_render_begin)(cmd, &d);
 }
 
 VKAPI_ATTR void VKAPI_CALL
 MALI_PER_ARCH(CmdEndRendering)(VkCommandBuffer commandBuffer)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
-   mali_cmd_render_end(cmd);
+   MALI_PER_ARCH(cmd_render_end)(cmd);
 }

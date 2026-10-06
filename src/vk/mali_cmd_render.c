@@ -51,9 +51,9 @@
 /* Begin                                                                   */
 
 void
-mali_cmd_render_begin(struct mali_cmd_buffer *cmd, const struct mali_render_desc *desc)
+MALI_PER_ARCH(cmd_render_begin)(struct mali_cmd_buffer *cmd, const struct mali_render_desc *desc)
 {
-   const bool any_preload = mali_fb_begin(cmd, desc);
+   const bool any_preload = MALI_PER_ARCH(fb_begin)(cmd, desc);
 
    if (any_preload) {
       /* Loads go through the texture unit: invalidate its caches after
@@ -102,7 +102,7 @@ next_iter_sb(struct mali_cmd_buffer *cmd, struct cs_builder *b)
 }
 
 bool
-mali_cmd_render_tiler(struct mali_cmd_buffer *cmd)
+MALI_PER_ARCH(cmd_render_tiler)(struct mali_cmd_buffer *cmd)
 {
    struct mali_render_state *r = &cmd->gfx.render;
    assert(r->active);
@@ -222,7 +222,7 @@ mali_cmd_render_tiler(struct mali_cmd_buffer *cmd)
 #define CRC_SCRATCH 8
 
 void
-mali_cmd_crc_invalidate(struct mali_cmd_buffer *cmd, const struct mali_image *image)
+MALI_PER_ARCH(cmd_crc_invalidate)(struct mali_cmd_buffer *cmd, const struct mali_image *image)
 {
    if (!image || !image->crc_header)
       return;
@@ -253,7 +253,7 @@ emit_crc_updates(struct mali_cmd_buffer *cmd, const struct mali_render_state *r,
    for (unsigned i = 0; i < r->desc.rt_count; i++) {
       const struct mali_fb_target *t = &r->desc.rt[i];
       if ((int)i != r->crc_rt && t->image && t->store && t->level == 0 && t->plane == 0)
-         mali_cmd_crc_invalidate(cmd, t->image);
+         MALI_PER_ARCH(cmd_crc_invalidate)(cmd, t->image);
    }
    if (r->crc_rt < 0)
       return;
@@ -412,20 +412,20 @@ issue_fragment_jobs(struct mali_cmd_buffer *cmd, struct mali_render_state *r,
 }
 
 void
-mali_cmd_render_end(struct mali_cmd_buffer *cmd)
+MALI_PER_ARCH(cmd_render_end)(struct mali_cmd_buffer *cmd)
 {
    struct mali_render_state *r = &cmd->gfx.render;
    if (!r->active)
       return;
 
-   if (mali_fb_pass_has_work(r) && !vk_command_buffer_has_error(&cmd->vk)) {
+   if (MALI_PER_ARCH(fb_pass_has_work)(r) && !vk_command_buffer_has_error(&cmd->vk)) {
       bool ok = mali_fb_alloc_tsd(cmd, r);
       uint32_t fbd_sz = 0;
-      uint64_t fbds = ok ? mali_fb_build(cmd, r, &fbd_sz) : 0;
+      uint64_t fbds = ok ? MALI_PER_ARCH(fb_build)(cmd, r, &fbd_sz) : 0;
       if (!fbds) {
          vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
       } else {
-         mali_fb_fill_tsd(cmd, r);
+         MALI_PER_ARCH(fb_fill_tsd)(cmd, r);
          if (r->tiler)
             flush_tiling(cmd);
          if (unlikely(r->measure_vt))

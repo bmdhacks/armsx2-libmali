@@ -33,6 +33,8 @@
 
 #include "mali_cmd_gfx.h"
 #include "mali_cs.h"
+/* After mali_cs.h, which sets PAN_ARCH: MALI_PER_ARCH below. */
+#include "mali_arch.h"
 #include "mali_descriptor_set_layout.h"
 #include "mali_shader.h"
 
@@ -40,22 +42,9 @@ struct mali_descriptor_set;
 struct mali_device;
 struct vk_pipeline;
 
-/* Command-buffer memory comes in 64 KiB slabs recycled through the device;
- * anything larger gets its own allocation, freed at reset. */
-#define MALI_CMD_SLAB_SIZE (64 * 1024)
-/* A cs_builder chunk: 16 KiB = 2048 instructions. */
+/* A cs_builder chunk: 16 KiB = 2048 instructions. Command-buffer memory
+ * (slabs, struct mali_ptr) is described in mali_cmd_gfx.h. */
 #define MALI_CS_CHUNK_SIZE (16 * 1024)
-
-struct mali_cmd_slab {
-   struct list_head link;
-   struct mali_kbase_bo bo;
-   bool recycle;             /* a standard slab (else a dedicated BO) */
-};
-
-struct mali_ptr {
-   void *cpu;
-   uint64_t gpu;
-};
 
 struct mali_cache_flush {
    enum mali_cs_flush_mode l2;
@@ -104,11 +93,6 @@ struct mali_cmd_cs {
    bool lazy_pending;   /* any of lazy[] or lazy_frag */
    bool lazy_frag;
    struct mali_cache_flush lazy_frag_flush;
-};
-
-struct mali_desc_state {
-   struct mali_descriptor_set *sets[MALI_MAX_SETS];
-   uint32_t dyn_offsets[MALI_MAX_SETS][MALI_MAX_DYNAMIC_BUFFERS];
 };
 
 struct mali_cmd_buffer {
@@ -207,8 +191,6 @@ bool mali_cmd_buffer_span(struct mali_cmd_buffer *cmd, unsigned sq,
 /* Bit i: subqueue i has recorded work. */
 uint32_t mali_cmd_buffer_subqueue_mask(struct mali_cmd_buffer *cmd);
 
-struct mali_ptr mali_cmd_alloc_slow(struct mali_cmd_buffer *cmd, uint64_t size,
-                                    uint64_t align);
 
 /* size bytes of CPU-mapped, CPU-uncached GPU memory at a multiple of align
  * (a power of two), alive until the command buffer is reset. On failure
@@ -224,14 +206,14 @@ mali_cmd_alloc(struct mali_cmd_buffer *cmd, uint64_t size, uint64_t align)
       cmd->cur_offset = off + size;
       return (struct mali_ptr){cmd->cur_cpu + off, cmd->cur_gpu + off};
    }
-   return mali_cmd_alloc_slow(cmd, size, align);
+   return MALI_PER_ARCH(cmd_alloc_slow)(cmd, size, align);
 }
 
 /* Frees the device's cached slabs. */
 void mali_cmd_slabs_finish(struct mali_device *dev);
 
-/* vkCmdBindPipeline, from mali_pipeline_cmd_bind. */
-void mali_cmd_bind_pipeline(struct mali_cmd_buffer *cmd, struct vk_pipeline *pipeline);
+/* vkCmdBindPipeline, and the pipeline ops' bind (mali_pipeline.c). */
+void MALI_PER_ARCH(cmd_bind_pipeline)(struct mali_cmd_buffer *cmd, struct vk_pipeline *pipeline);
 
 /* ---------------------------------------------------------------------- */
 /* Barriers (mali_cmd_buffer.c), shared with later command code            */

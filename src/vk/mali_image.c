@@ -14,6 +14,7 @@
 #include "mali_image.h"
 #include "mali_memory.h"
 #include "mali_wsi.h"
+#include "mali_cmd_gfx.h"
 
 #include <stdlib.h>
 
@@ -43,8 +44,12 @@
  * pan_mod_afbc_test_props).
  */
 static bool
-can_use_afbc(const struct mali_image *image, const enum pipe_format *formats)
+can_use_afbc(const struct mali_image *image, const enum pipe_format *formats, unsigned arch)
 {
+   /* Off on v9 until it is measured on a G57; v9 also lacks the
+    * 16-bit-channel AFBC modes. */
+   if (arch == 9)
+      return false;
    const VkImageUsageFlags usage = image->vk.usage | image->vk.stencil_usage;
    if (!(usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)))
@@ -83,9 +88,9 @@ can_use_afbc(const struct mali_image *image, const enum pipe_format *formats)
  * - 16x16 u-interleaved otherwise.
  */
 static uint64_t
-choose_modifier(const struct mali_image *image, const enum pipe_format *formats)
+choose_modifier(const struct mali_image *image, const enum pipe_format *formats, unsigned arch)
 {
-   if (can_use_afbc(image, formats))
+   if (can_use_afbc(image, formats, arch))
       return mali_afbc_can_ytr(formats[0]) ? MALI_MOD_AFBC_YTR : MALI_MOD_AFBC;
    if (image->vk.tiling == VK_IMAGE_TILING_LINEAR ||
        image->vk.image_type == VK_IMAGE_TYPE_1D ||
@@ -171,8 +176,11 @@ mali_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
                          "images of format %d are not supported", image->vk.format);
       goto fail;
    }
-   image->vk.drm_format_mod = choose_modifier(image, formats);
-   const bool crc = mali_image_wants_crc(pCreateInfo, image->vk.drm_format_mod);
+   const unsigned arch = mali_device_physical(dev)->arch;
+   image->vk.drm_format_mod = choose_modifier(image, formats, arch);
+   /* No CRC on v9 yet: the job manager cannot update the seed from the
+    * GPU, and the CPU-side seed it needs is not written yet. */
+   const bool crc = arch != 9 && mali_image_wants_crc(pCreateInfo, image->vk.drm_format_mod);
 
    /* Planes follow each other; each starts 4 KiB aligned (data_size is
     * rounded so). */
@@ -273,6 +281,13 @@ mali_GetImageMemoryRequirements2(VkDevice _device, const VkImageMemoryRequiremen
       }
    }
 }
+
+/* The CRC knobs (mali_cmd_gfx.h): here, in code compiled once, so the
+ * render-pass code of either arch reads the same ones. */
+struct mali_crc_options mali_crc_options = {
+   .empty_tile_read = true,
+   .empty_tile_write = true,
+};
 
 /*
  * Start the image's CRC state from zero: seed 0 and a table of zeros, as
@@ -375,7 +390,8 @@ mali_CreateImageView(VkDevice _device, const VkImageViewCreateInfo *pCreateInfo,
    if (!view)
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   VkResult result = mali_image_view_init_descs(dev, view);
+   VkResult result =
+      mali_arch_dispatch(mali_device_physical(dev)->arch, image_view_init_descs, dev, view);
    if (result != VK_SUCCESS) {
       vk_image_view_destroy(&dev->vk, pAllocator, &view->vk);
       return result;
@@ -394,6 +410,6 @@ mali_DestroyImageView(VkDevice _device, VkImageView _view,
 
    if (!view)
       return;
-   mali_image_view_finish_descs(dev, view);
+   mali_bo_pool_free(&dev->desc_pool, &view->plane_descs);
    vk_image_view_destroy(&dev->vk, pAllocator, &view->vk);
 }

@@ -34,6 +34,7 @@
 
 #include "kbase/kbase.h"
 
+#include "mali_arch.h"
 #include "mali_descriptor_set_layout.h"
 
 struct mali_device;
@@ -129,8 +130,8 @@ mali_descriptor_set_size(const struct mali_descriptor_set *set)
  * unbound or unused set number): an empty entry. out: 16 bytes, 16-byte
  * aligned in a 64-byte aligned table.
  */
-void mali_descriptor_set_pack_resource(const struct mali_descriptor_set *set,
-                                       void *out);
+MALI_PER_ARCH_DECL(void, descriptor_set_pack_resource,
+                   (const struct mali_descriptor_set *set, void *out));
 
 /*
  * The Buffer descriptor for dynamic buffer idx of set with its dynamic
@@ -139,12 +140,12 @@ void mali_descriptor_set_pack_resource(const struct mali_descriptor_set *set,
  * bytes for uniform buffers and 4 for storage buffers (panvk). out: 32
  * bytes.
  */
-void mali_descriptor_set_pack_dyn_buf(const struct mali_descriptor_set *set,
-                                      uint32_t idx, uint32_t dynamic_offset,
-                                      void *out);
+MALI_PER_ARCH_DECL(void, descriptor_set_pack_dyn_buf,
+                   (const struct mali_descriptor_set *set, uint32_t idx,
+                    uint32_t dynamic_offset, void *out));
 
 /* The driver table's dummy sampler (texel fetches still name a sampler on
  * Valhall). out: 32 bytes. */
-void mali_pack_dummy_sampler(void *out);
+MALI_PER_ARCH_DECL(void, pack_dummy_sampler, (void *out));
 
 #endif

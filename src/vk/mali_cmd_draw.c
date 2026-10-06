@@ -503,13 +503,13 @@ MALI_PER_ARCH(CmdDrawIndexed)(VkCommandBuffer commandBuffer, uint32_t indexCount
 /* Full-screen draws                                                       */
 
 void
-mali_cmd_run_fullscreen(struct mali_cmd_buffer *cmd, uint64_t dcd, const VkRect2D *rect,
-                        uint32_t base_layer, uint32_t layer_count)
+MALI_PER_ARCH(cmd_run_fullscreen)(struct mali_cmd_buffer *cmd, uint64_t dcd, const VkRect2D *rect,
+                                  uint32_t base_layer, uint32_t layer_count)
 {
    struct mali_render_state *r = &cmd->gfx.render;
    struct cs_builder *b = mali_cmd_cs(cmd, MALI_SUBQUEUE_VERTEX_TILER);
 
-   if (!mali_cmd_render_tiler(cmd)) {
+   if (!MALI_PER_ARCH(cmd_render_tiler)(cmd)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
       return;
    }
@@ -562,7 +562,7 @@ mali_cmd_run_fullscreen(struct mali_cmd_buffer *cmd, uint64_t dcd, const VkRect2
 /* A primitive barrier over the whole framebuffer: later fragments of the
  * pass wait for earlier ones in each tile (panvk cmd_fb_barrier). */
 void
-mali_cmd_fb_barrier(struct mali_cmd_buffer *cmd)
+MALI_PER_ARCH(cmd_fb_barrier)(struct mali_cmd_buffer *cmd)
 {
    struct mali_render_state *r = &cmd->gfx.render;
    struct mali_ptr zsd = mali_cmd_alloc(cmd, pan_size(DEPTH_STENCIL), 32);
@@ -587,7 +587,7 @@ mali_cmd_fb_barrier(struct mali_cmd_buffer *cmd)
       cfg.depth_stencil = zsd.gpu;
    }
    const VkRect2D all = {{0, 0}, {r->desc.width, r->desc.height}};
-   mali_cmd_run_fullscreen(cmd, dcd.gpu, &all, 0, MAX2(r->desc.layer_count, 1));
+   MALI_PER_ARCH(cmd_run_fullscreen)(cmd, dcd.gpu, &all, 0, MAX2(r->desc.layer_count, 1));
 }
 
 /* ---------------------------------------------------------------------- */
@@ -649,20 +649,20 @@ MALI_PER_ARCH(CmdClearAttachments)(VkCommandBuffer commandBuffer, uint32_t attac
    if (!any)
       return;
 
-   if (!mali_cmd_render_tiler(cmd)) {
+   if (!MALI_PER_ARCH(cmd_render_tiler)(cmd)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
       return;
    }
-   const struct mali_shader *fs = mali_meta_fs_get(cmd, &key);
+   const struct mali_shader *fs = MALI_PER_ARCH(meta_fs_get)(cmd, &key);
    struct mali_ptr dcd = mali_cmd_alloc(cmd, pan_size(DRAW), 64);
    if (!fs || !dcd.cpu ||
-       !mali_meta_fs_dcd(cmd, fs, &key, &push, NULL, 0, NULL, false, dcd.cpu)) {
+       !MALI_PER_ARCH(meta_fs_dcd)(cmd, fs, &key, &push, NULL, 0, NULL, false, dcd.cpu)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
       return;
    }
 
    for (uint32_t i = 0; i < rectCount; i++) {
-      mali_cmd_run_fullscreen(cmd, dcd.gpu, &pRects[i].rect, pRects[i].baseArrayLayer,
-                              pRects[i].layerCount);
+      MALI_PER_ARCH(cmd_run_fullscreen)(cmd, dcd.gpu, &pRects[i].rect, pRects[i].baseArrayLayer,
+                                        pRects[i].layerCount);
    }
 }

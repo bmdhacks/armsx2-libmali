@@ -88,7 +88,7 @@ bind_static_state(struct vk_dynamic_graphics_state *dyn, const struct mali_graph
  * state a bound pipeline had static).
  */
 void
-mali_cmd_bind_graphics(struct mali_cmd_buffer *cmd, struct mali_graphics_pipeline *p)
+MALI_PER_ARCH(cmd_bind_graphics)(struct mali_cmd_buffer *cmd, struct mali_graphics_pipeline *p)
 {
    struct mali_gfx_draw_state *d = &cmd->gfx.draw;
    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
@@ -168,8 +168,8 @@ MALI_PER_ARCH(CmdBindIndexBuffer2KHR)(VkCommandBuffer commandBuffer, VkBuffer bu
 /* FAU                                                                     */
 
 uint64_t
-mali_cmd_gfx_fau(struct mali_cmd_buffer *cmd, const struct mali_shader *s,
-                 const void *sysvals, const void *push, uint32_t push_size)
+MALI_PER_ARCH(cmd_gfx_fau)(struct mali_cmd_buffer *cmd, const struct mali_shader *s,
+                           const void *sysvals, const void *push, uint32_t push_size)
 {
    if (!s || !s->fau.total_count)
       return 0;
@@ -222,7 +222,7 @@ mali_cmd_gfx_fau(struct mali_cmd_buffer *cmd, const struct mali_shader *s,
 /* Thread-local storage                                                    */
 
 uint64_t
-mali_cmd_tls_buffer(struct mali_cmd_buffer *cmd, uint32_t tls_size)
+MALI_PER_ARCH(cmd_tls_buffer)(struct mali_cmd_buffer *cmd, uint32_t tls_size)
 {
    struct mali_device *dev = cmd->dev;
    const struct mali_thread_props tp = mali_thread_props(dev);

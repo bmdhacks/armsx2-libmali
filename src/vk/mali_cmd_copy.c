@@ -84,7 +84,7 @@ build_meta_nir(struct mali_device *dev, enum mali_meta_shader m)
    const unsigned bits = elem == 1 ? 8 : 32;
 
    nir_builder b = nir_builder_init_simple_shader(
-      MESA_SHADER_COMPUTE, mali_shader_nir_options(dev, MESA_SHADER_COMPUTE), "%s",
+      MESA_SHADER_COMPUTE, MALI_PER_ARCH(shader_nir_options)(dev, MESA_SHADER_COMPUTE), "%s",
       names[m]);
    b.shader->info.workgroup_size[0] = META_WG_SIZE;
    b.shader->info.workgroup_size[1] = 1;
@@ -134,7 +134,7 @@ get_meta(struct mali_cmd_buffer *cmd, enum mali_meta_shader m)
    struct mali_shader *s = dev->meta[m];
    if (!s) {
       nir_shader *nir = build_meta_nir(dev, m);
-      mali_shader_preprocess(dev, nir);
+      MALI_PER_ARCH(shader_preprocess)(dev, nir);
 
       const struct vk_pipeline_robustness_state rs = {
          .storage_buffers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT,
@@ -153,7 +153,7 @@ get_meta(struct mali_cmd_buffer *cmd, enum mali_meta_shader m)
       _mesa_blake3_update(&h, &m, sizeof(m));
       _mesa_blake3_final(&h, key);
 
-      VkResult r = mali_shader_compile(dev, &info, key, &s);
+      VkResult r = MALI_PER_ARCH(shader_compile)(dev, &info, key, &s);
       if (r != VK_SUCCESS)
          s = NULL;
       dev->meta[m] = s;
@@ -169,11 +169,11 @@ void
 mali_meta_finish(struct mali_device *dev)
 {
    for (unsigned i = 0; i < MALI_META_COUNT; i++) {
-      mali_shader_unref(dev, dev->meta[i]);
+      MALI_PER_ARCH(shader_unref)(dev, dev->meta[i]);
       dev->meta[i] = NULL;
    }
-   mali_meta_gfx_finish(dev);
-   mali_blend_shaders_finish(dev);
+   MALI_PER_ARCH(meta_gfx_finish)(dev);
+   MALI_PER_ARCH(blend_shaders_finish)(dev);
 }
 
 static void

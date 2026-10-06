@@ -4,7 +4,7 @@
  */
 
 /*
- * Blend shaders (mali_blend.h).
+ * Blend shaders (mali_blend.h), built per arch.
  *
  * The shader follows Mesa's pan_blend_create_shader (src/panfrost/lib/
  * pan_blend.c, MIT) for v9+: read the fragment shader's colour output(s)
@@ -28,7 +28,9 @@
  * device is destroyed.
  */
 
-#define PAN_ARCH MALI_PAN_ARCH
+#ifndef PAN_ARCH
+#error "mali_blend.c is built per arch: PAN_ARCH must be set"
+#endif
 #include "genxml/gen_macros.h"
 
 #include "mali_blend.h"
@@ -49,7 +51,6 @@
 #include "vk_log.h"
 
 #include "mali_compiler.h"
-#include "mali_queue.h"
 #include "mali_vk.h"
 
 #define BLEND_CODE_ALIGN 128
@@ -112,7 +113,7 @@ opaque_internal_desc(enum pipe_format format, unsigned rt)
 }
 
 nir_shader *
-mali_blend_shader_nir(const struct mali_blend_shader_key *key)
+MALI_PER_ARCH(blend_shader_nir)(const struct mali_blend_shader_key *key)
 {
    const nir_shader_compiler_options *options =
       pan_get_nir_shader_compiler_options(PAN_ARCH, MESA_SHADER_FRAGMENT, false);
@@ -216,9 +217,10 @@ lower_blend_const(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
 /* Compile and cache                                                       */
 
 void
-mali_blend_shader_key_init(struct mali_blend_shader_key *key, const struct mali_gfx_baked *bk,
-                           unsigned rt, enum pipe_format format, unsigned samples,
-                           const struct pan_shader_info *fs_info)
+MALI_PER_ARCH(blend_shader_key_init)(struct mali_blend_shader_key *key,
+                                     const struct mali_gfx_baked *bk, unsigned rt,
+                                     enum pipe_format format, unsigned samples,
+                                     const struct pan_shader_info *fs_info)
 {
    const struct mali_blend_rt_baked *b = &bk->blend[rt];
 
@@ -235,7 +237,8 @@ mali_blend_shader_key_init(struct mali_blend_shader_key *key, const struct mali_
 }
 
 void
-mali_blend_shaders_prepare(struct mali_device *dev, const struct mali_graphics_pipeline *p)
+MALI_PER_ARCH(blend_shaders_prepare)(struct mali_device *dev,
+                                     const struct mali_graphics_pipeline *p)
 {
    const struct mali_gfx_baked *bk = &p->baked;
    if (!p->fs || !bk->needs_blend_shader || bk->uses_dynamic_state)
@@ -246,10 +249,11 @@ mali_blend_shaders_prepare(struct mali_device *dev, const struct mali_graphics_p
       if (bk->blend[i].mode != MALI_BLEND_RT_SHADER)
          continue;
       struct mali_blend_shader_key key;
-      mali_blend_shader_key_init(&key, bk, i, vk_format_to_pipe_format(bk->blend[i].format),
-                                 samples, &p->fs->info);
+      MALI_PER_ARCH(blend_shader_key_init)(&key, bk, i,
+                                           vk_format_to_pipe_format(bk->blend[i].format),
+                                           samples, &p->fs->info);
       uint64_t addr;
-      mali_blend_shader_get(dev, &key, &addr);
+      MALI_PER_ARCH(blend_shader_get)(dev, &key, &addr);
    }
 }
 
@@ -258,7 +262,7 @@ compile_blend_shader(struct mali_device *dev, const struct mali_blend_shader_key
                      struct mali_bo_ref *code)
 {
    const struct mali_physical_device *pdev = mali_device_physical(dev);
-   nir_shader *nir = mali_blend_shader_nir(key);
+   nir_shader *nir = MALI_PER_ARCH(blend_shader_nir)(key);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_blend_const, nir_metadata_control_flow,
             NULL);
 
@@ -298,8 +302,8 @@ compile_blend_shader(struct mali_device *dev, const struct mali_blend_shader_key
 }
 
 VkResult
-mali_blend_shader_get(struct mali_device *dev, const struct mali_blend_shader_key *key,
-                      uint64_t *addr)
+MALI_PER_ARCH(blend_shader_get)(struct mali_device *dev, const struct mali_blend_shader_key *key,
+                                uint64_t *addr)
 {
    VkResult result = VK_SUCCESS;
 
@@ -340,14 +344,14 @@ mali_blend_shader_get(struct mali_device *dev, const struct mali_blend_shader_ke
 }
 
 unsigned
-mali_blend_shader_count(struct mali_device *dev)
+MALI_PER_ARCH(blend_shader_count)(struct mali_device *dev)
 {
    struct blend_cache *cache = dev->blend_shaders;
    return cache ? _mesa_hash_table_num_entries(cache->ht) : 0;
 }
 
 void
-mali_blend_shaders_finish(struct mali_device *dev)
+MALI_PER_ARCH(blend_shaders_finish)(struct mali_device *dev)
 {
    struct blend_cache *cache = dev->blend_shaders;
    if (!cache)

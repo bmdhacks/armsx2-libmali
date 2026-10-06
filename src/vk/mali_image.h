@@ -22,6 +22,7 @@
 #include "util/format/u_formats.h"
 #include "vk_image.h"
 
+#include "mali_arch.h"
 #include "mali_bo_pool.h"
 
 struct mali_device_memory;
@@ -191,9 +192,10 @@ mali_image_is_afbc(const struct mali_image *image)
 /* The hardware AFBC compression mode (enum mali_afbc_compression_mode) of
  * a plane of an AFBC image, and the one a texture read of it as `view`
  * uses (a stencil plane read as S8 has its own). mali_image_view.c. */
-unsigned mali_image_afbc_hw_mode(const struct mali_image *image, unsigned plane);
-unsigned mali_image_afbc_hw_read_mode(const struct mali_image *image, unsigned plane,
-                                      enum pipe_format view);
+MALI_PER_ARCH_DECL(unsigned, image_afbc_hw_mode,
+                   (const struct mali_image *image, unsigned plane));
+MALI_PER_ARCH_DECL(unsigned, image_afbc_hw_read_mode,
+                   (const struct mali_image *image, unsigned plane, enum pipe_format view));
 
 /* The plane an aspect lives in. */
 static inline unsigned
@@ -226,35 +228,49 @@ struct mali_image_view {
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_image_view, vk.base, VkImageView,
                                VK_OBJECT_TYPE_IMAGE_VIEW)
 
-/* Build and free a view's Texture descriptors (mali_image_view.c); called
- * by vkCreateImageView / vkDestroyImageView. The image must be bound. */
+/* Build a view's Texture descriptors (mali_image_view.c, per arch); called
+ * by vkCreateImageView. The image must be bound. vkDestroyImageView frees
+ * plane_descs. */
 struct mali_device;
-VkResult mali_image_view_init_descs(struct mali_device *dev, struct mali_image_view *view);
-void mali_image_view_finish_descs(struct mali_device *dev, struct mali_image_view *view);
+MALI_PER_ARCH_DECL(VkResult, image_view_init_descs,
+                   (struct mali_device *dev, struct mali_image_view *view));
+
+/* Bytes of plane descriptors behind a Texture descriptor with `layers`
+ * layers of one level (one 32-byte plane descriptor each). */
+static inline unsigned
+mali_image_plane_texture_desc_size(unsigned layers)
+{
+   return layers * 32;
+}
 
 /* Internal reads of an image plane (render-pass preloads, blits): a 2D
  * Texture descriptor for one level and `layers` layers from first_layer,
  * read as `format` with an identity swizzle. The plane descriptors
  * (mali_image_plane_texture_desc_size bytes, 32-byte aligned) are
  * written to planes_cpu / planes_gpu. */
-unsigned mali_image_plane_texture_desc_size(unsigned layers);
-void mali_image_pack_plane_texture(const struct mali_image *image, unsigned plane,
-                                   enum pipe_format format, unsigned level,
-                                   unsigned first_layer, unsigned layers,
-                                   void *planes_cpu, uint64_t planes_gpu, uint32_t out[8]);
+MALI_PER_ARCH_DECL(void, image_pack_plane_texture,
+                   (const struct mali_image *image, unsigned plane, enum pipe_format format,
+                    unsigned level, unsigned first_layer, unsigned layers, void *planes_cpu,
+                    uint64_t planes_gpu, uint32_t out[8]));
 
 /* ---------------------------------------------------------------------- */
 /* Formats (mali_formats.c)                                                */
 
 /*
  * Image features of a format for linear and optimal tiling (the same set),
- * and buffer features. From Mesa's v11 format table and the GPU's
- * compressed-format bits, the way panvk derives them.
+ * and buffer features. From Mesa's format table for the device's arch and
+ * the GPU's compressed-format bits, the way panvk derives them. The
+ * mali_format_* functions pick the arch's table (mali_format_table.c,
+ * built per arch).
  */
 VkFormatFeatureFlags mali_format_image_features(const struct mali_physical_device *pdev,
                                                 VkFormat format);
 VkFormatFeatureFlags mali_format_buffer_features(const struct mali_physical_device *pdev,
                                                  VkFormat format);
+MALI_PER_ARCH_DECL(VkFormatFeatureFlags, format_image_features,
+                   (const struct mali_physical_device *pdev, VkFormat format));
+MALI_PER_ARCH_DECL(VkFormatFeatureFlags, format_buffer_features,
+                   (const struct mali_physical_device *pdev, VkFormat format));
 
 /* The formats of each plane of an image of this format; returns the plane
  * count, 0 for a format images cannot have. */

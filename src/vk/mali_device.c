@@ -23,6 +23,82 @@
 #include "mali_compiler.h"
 #include "vk_pipeline_cache.h"
 
+#include "util/hash_table.h"
+#include "mali_pipeline.h"
+
+/* ---------------------------------------------------------------------- */
+/* Interned keys (mali_pipeline.h), shared by both arches' pipelines      */
+
+struct key_entry {
+   uint32_t id;
+   uint32_t size;
+   uint8_t data[];
+};
+
+static uint32_t
+key_hash(const void *k)
+{
+   const struct key_entry *e = k;
+   return _mesa_hash_data(e->data, e->size);
+}
+
+static bool
+key_equal(const void *a, const void *b)
+{
+   const struct key_entry *x = a, *y = b;
+   return x->size == y->size && !memcmp(x->data, y->data, x->size);
+}
+
+void
+mali_device_keys_init(struct mali_device *dev)
+{
+   simple_mtx_init(&dev->keys.lock, mtx_plain);
+   dev->keys.table = _mesa_hash_table_create(NULL, key_hash, key_equal);
+   dev->keys.count = 0;
+}
+
+void
+mali_device_keys_finish(struct mali_device *dev)
+{
+   if (!dev->keys.table)
+      return;
+   hash_table_foreach(dev->keys.table, e)
+      free((void *)e->key);
+   _mesa_hash_table_destroy(dev->keys.table, NULL);
+   dev->keys.table = NULL;
+   simple_mtx_destroy(&dev->keys.lock);
+}
+
+uint32_t
+mali_device_intern_key(struct mali_device *dev, const void *data, size_t size)
+{
+   struct key_entry *k = malloc(sizeof(*k) + size);
+   if (!k || !dev->keys.table) {
+      free(k);
+      return 0;
+   }
+   k->size = size;
+   memcpy(k->data, data, size);
+
+   simple_mtx_lock(&dev->keys.lock);
+   uint32_t id = 0;
+   struct hash_entry *e = _mesa_hash_table_search(dev->keys.table, k);
+   if (e) {
+      id = ((const struct key_entry *)e->key)->id;
+      free(k);
+   } else {
+      k->id = ++dev->keys.count;
+      if (_mesa_hash_table_insert(dev->keys.table, k, NULL)) {
+         id = k->id;
+      } else {
+         dev->keys.count--;
+         free(k);
+      }
+   }
+   simple_mtx_unlock(&dev->keys.lock);
+   return id;
+}
+
 /*
  * Device state every frontend needs alike (design doc §2.3): the
  * command-buffer slab cache, internal shader caches, and the sync-object

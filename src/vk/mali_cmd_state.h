@@ -226,7 +226,7 @@ mali_compute_res_table(struct mali_cmd_buffer *cmd, const struct mali_shader *cs
                                         MALI_DESCRIPTOR_SIZE);
    if (!drv.cpu)
       return 0;
-   mali_pack_dummy_sampler(drv.cpu);
+   MALI_PER_ARCH(pack_dummy_sampler)(drv.cpu);
    for (uint32_t i = 0; i < di->dyn_bufs.count; i++) {
       uint32_t h = di->dyn_bufs.map[i];
       uint32_t set = MALI_COPY_DESC_HANDLE_SET(h);
@@ -234,7 +234,7 @@ mali_compute_res_table(struct mali_cmd_buffer *cmd, const struct mali_shader *cs
       const struct mali_descriptor_set *s = desc ? desc->sets[set] : NULL;
       uint8_t *out = (uint8_t *)drv.cpu + (1 + i) * MALI_DESCRIPTOR_SIZE;
       if (s)
-         mali_descriptor_set_pack_dyn_buf(s, idx, desc->dyn_offsets[set][idx], out);
+         MALI_PER_ARCH(descriptor_set_pack_dyn_buf)(s, idx, desc->dyn_offsets[set][idx], out);
       else
          memset(out, 0, MALI_DESCRIPTOR_SIZE);
    }
@@ -258,7 +258,7 @@ mali_compute_res_table(struct mali_cmd_buffer *cmd, const struct mali_shader *cs
       const struct mali_descriptor_set *s =
          (set < MALI_MAX_SETS && (di->used_set_mask & BITFIELD_BIT(set)) && desc) ?
             desc->sets[set] : NULL;
-      mali_descriptor_set_pack_resource(s, (uint8_t *)t.cpu + i * MALI_RESOURCE_SIZE);
+      MALI_PER_ARCH(descriptor_set_pack_resource)(s, (uint8_t *)t.cpu + i * MALI_RESOURCE_SIZE);
    }
    return t.gpu | count;
 }
@@ -275,7 +275,7 @@ mali_compute_tsd(struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
    unsigned wls_instances = 0, wls_size = 0;
 
    if (cs->info.tls_size) {
-      tls_ptr = mali_cmd_tls_buffer(cmd, cs->info.tls_size);
+      tls_ptr = MALI_PER_ARCH(cmd_tls_buffer)(cmd, cs->info.tls_size);
       if (!tls_ptr)
          return 0;
    }
@@ -415,7 +415,7 @@ mali_gfx_pack_dyn_bufs(const struct mali_shader_desc_info *di, const struct mali
       const struct mali_descriptor_set *s = desc->sets[set];
       uint8_t *o = out + i * MALI_DESCRIPTOR_SIZE;
       if (s)
-         mali_descriptor_set_pack_dyn_buf(s, idx, desc->dyn_offsets[set][idx], o);
+         MALI_PER_ARCH(descriptor_set_pack_dyn_buf)(s, idx, desc->dyn_offsets[set][idx], o);
       else
          memset(o, 0, MALI_DESCRIPTOR_SIZE);
    }
@@ -444,7 +444,7 @@ mali_gfx_res_table(struct mali_cmd_buffer *cmd, const struct mali_shader *s,
       const struct mali_descriptor_set *ds =
          (set < MALI_MAX_SETS && (di->used_set_mask & BITFIELD_BIT(set))) ? desc->sets[set]
                                                                           : NULL;
-      mali_descriptor_set_pack_resource(ds, (uint8_t *)t.cpu + i * MALI_RESOURCE_SIZE);
+      MALI_PER_ARCH(descriptor_set_pack_resource)(ds, (uint8_t *)t.cpu + i * MALI_RESOURCE_SIZE);
    }
    return t.gpu | count;
 }
@@ -523,7 +523,7 @@ mali_gfx_vs_srt(struct mali_cmd_buffer *cmd)
          }
       }
    }
-   mali_pack_dummy_sampler(descs + MALI_MAX_VS_ATTRIBS * MALI_DESCRIPTOR_SIZE);
+   MALI_PER_ARCH(pack_dummy_sampler)(descs + MALI_MAX_VS_ATTRIBS * MALI_DESCRIPTOR_SIZE);
    mali_gfx_pack_dyn_bufs(&vs->desc, &cmd->gfx.desc,
                           descs + (MALI_MAX_VS_ATTRIBS + 1) * MALI_DESCRIPTOR_SIZE);
    for (uint32_t i = 0; i < vb_count; i++) {
@@ -592,7 +592,7 @@ mali_gfx_fs_srt(struct mali_cmd_buffer *cmd)
    memset(descs, 0, prefix * MALI_DESCRIPTOR_SIZE);
    if (fs->desc.needs_varying_descs)
       mali_gfx_pack_varying_descs(p->vs, fs, descs);
-   mali_pack_dummy_sampler(descs + prefix * MALI_DESCRIPTOR_SIZE);
+   MALI_PER_ARCH(pack_dummy_sampler)(descs + prefix * MALI_DESCRIPTOR_SIZE);
    mali_gfx_pack_dyn_bufs(&fs->desc, &cmd->gfx.desc, descs + (prefix + 1) * MALI_DESCRIPTOR_SIZE);
    return mali_gfx_res_table(cmd, fs, &cmd->gfx.desc, t.gpu, count);
 }
@@ -638,11 +638,11 @@ mali_gfx_blend_shader_for(struct mali_cmd_buffer *cmd, const struct mali_graphic
 {
    const struct mali_render_state *r = &cmd->gfx.render;
    struct mali_blend_shader_key key;
-   mali_blend_shader_key_init(&key, &p->baked, i, r->desc.rt[i].format,
-                              r->desc.rt[i].image->vk.samples, &p->fs->info);
+   MALI_PER_ARCH(blend_shader_key_init)(&key, &p->baked, i, r->desc.rt[i].format,
+                                        r->desc.rt[i].image->vk.samples, &p->fs->info);
 
    uint64_t addr = 0;
-   if (mali_blend_shader_get(cmd->dev, &key, &addr) != VK_SUCCESS) {
+   if (MALI_PER_ARCH(blend_shader_get)(cmd->dev, &key, &addr) != VK_SUCCESS) {
       static bool warned;
       if (!warned) {
          warned = true;
@@ -925,7 +925,7 @@ mali_gfx_update_dirty(struct mali_cmd_buffer *cmd, const struct mali_draw_info *
 
    mali_gfx_collect_dynamic_dirty(cmd);
 
-   if (!mali_cmd_render_tiler(cmd))
+   if (!MALI_PER_ARCH(cmd_render_tiler)(cmd))
       return false;
 
    const struct mali_gfx_baked *dbk = NULL;
@@ -938,7 +938,7 @@ mali_gfx_update_dirty(struct mali_cmd_buffer *cmd, const struct mali_draw_info *
             .fs = p->fs,
          };
          d->dyn_baked.uses_dynamic_state = true;
-         mali_gfx_pack_state(&in, &d->dyn_baked);
+         MALI_PER_ARCH(gfx_pack_state)(&in, &d->dyn_baked);
       }
       dbk = &d->dyn_baked;
    }
@@ -990,8 +990,8 @@ mali_gfx_build_vs_fau(struct mali_cmd_buffer *cmd, const struct mali_graphics_sy
                       uint64_t *out)
 {
    const struct mali_shader *vs = cmd->gfx.draw.pipeline->vs;
-   uint64_t fau = mali_cmd_gfx_fau(cmd, vs, sv, cmd->push_constants,
-                                   sizeof(cmd->push_constants));
+   uint64_t fau = MALI_PER_ARCH(cmd_gfx_fau)(cmd, vs, sv, cmd->push_constants,
+                                             sizeof(cmd->push_constants));
    if (vs->fau.total_count && !fau)
       return false;
    *out = fau;
@@ -1003,8 +1003,8 @@ mali_gfx_build_fs_fau(struct mali_cmd_buffer *cmd, const struct mali_graphics_sy
                       uint64_t *out)
 {
    const struct mali_shader *fs = cmd->gfx.draw.pipeline->fs;
-   uint64_t fau = fs ? mali_cmd_gfx_fau(cmd, fs, sv, cmd->push_constants,
-                                        sizeof(cmd->push_constants)) : 0;
+   uint64_t fau = fs ? MALI_PER_ARCH(cmd_gfx_fau)(cmd, fs, sv, cmd->push_constants,
+                                                  sizeof(cmd->push_constants)) : 0;
    if (fs && fs->fau.total_count && !fau)
       return false;
    *out = fau;

@@ -8,17 +8,15 @@
  * gets a distinct linker symbol instead of colliding with its other-arch
  * copy in the same .so. Mirrors panvk's panvk_per_arch()/panvk_macros.h.
  *
- * A file that uses MALI_PER_ARCH() must already have PAN_ARCH defined
- * (the same precondition genxml/gen_macros.h has).
+ * MALI_PER_ARCH() needs PAN_ARCH (the same precondition genxml/gen_macros.h
+ * has); the declaration and dispatch helpers below do not, so headers that
+ * code compiled once also includes can use them.
  */
 
-#ifndef MALI_ARCH_H
-#define MALI_ARCH_H
-
-#ifndef PAN_ARCH
-#error "PAN_ARCH must be defined before including mali_arch.h"
-#endif
-
+/* Outside the include guard: a translation unit compiled once may get
+ * PAN_ARCH only after a first include (from mali_cs.h), and a later
+ * include then defines MALI_PER_ARCH. */
+#if defined(PAN_ARCH) && !defined(MALI_PER_ARCH)
 #if PAN_ARCH == 9
 #define MALI_PER_ARCH(name) mali_v9_##name
 #elif PAN_ARCH == 11
@@ -26,6 +24,21 @@
 #else
 #error "no per-arch naming for this PAN_ARCH"
 #endif
+#endif
+
+#ifndef MALI_ARCH_H
+#define MALI_ARCH_H
+
+/*
+ * Declares both arches' variants of a per-arch function:
+ *    MALI_PER_ARCH_DECL(void, pack_dummy_sampler, (void *out));
+ * declares mali_v9_pack_dummy_sampler and mali_v11_pack_dummy_sampler.
+ * Per-arch code calls its own with MALI_PER_ARCH(name)(...), code compiled
+ * once picks one with mali_arch_dispatch.
+ */
+#define MALI_PER_ARCH_DECL(ret, name, params)                                  \
+   ret mali_v9_##name params;                                                  \
+   ret mali_v11_##name params
 
 /*
  * For code compiled once (not per arch): call the variant that matches a

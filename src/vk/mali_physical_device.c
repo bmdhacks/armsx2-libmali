@@ -683,7 +683,8 @@ physical_device_create(struct mali_instance *instance, const char *path,
    pdev->vk.supported_sync_types = pdev->arch == 9 ? mali_v9_sync_types : mali_v11_sync_types;
 
    /* Compiled shaders are what pipeline caches hold. */
-   pdev->vk.pipeline_cache_import_ops = mali_pipeline_cache_import_ops;
+   pdev->vk.pipeline_cache_import_ops = pdev->arch == 9 ? mali_v9_pipeline_cache_import_ops
+                                                        : mali_v11_pipeline_cache_import_ops;
 
    *out = &pdev->vk;
    return VK_SUCCESS;

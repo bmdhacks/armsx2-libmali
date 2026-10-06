@@ -18,7 +18,10 @@
  *  - the bind block (struct mali_gfx_bind), what binds and draws read;
  *  - the hardware words the blob bakes at pipeline creation: TILER_FLAGS,
  *    DCD0 (occlusion query off and on), DCD1, DCD2, the Depth/stencil
- *    descriptor, and per render target the blend equation and mode.
+ *    descriptor, and per render target the blend equation and mode. They
+ *    are packed for the device's arch (mali_pipeline_state.c is built per
+ *    arch); on v9 TILER_FLAGS is word 0 of the Malloc Vertex job's
+ *    Primitive section and DCD2 is 0 (v9's Draw descriptor has no Flags 2).
  *    mali_gfx_pack_state() packs them from state; pipeline creation runs
  *    it with the pipeline's static state, and the draw encoder runs it
  *    again with the command buffer's state when baked.uses_dynamic_state
@@ -36,6 +39,7 @@
 #include "vk_pipeline.h"
 #include "vk_pipeline_layout.h"
 
+#include "mali_arch.h"
 #include "mali_shader.h"
 
 struct vk_command_buffer;
@@ -87,11 +91,12 @@ struct mali_gfx_baked {
    bool uses_dynamic_state;
 
    enum mesa_prim prim;           /* static topology, MESA_PRIM_COUNT if dynamic */
-   uint32_t tiler_flags;          /* v11 Primitive Flags; index type is per draw */
+   uint32_t tiler_flags;          /* v11 Primitive Flags, v9 Primitive word 0;
+                                   * index type is per draw */
    uint32_t dcd0[2];              /* [0] occlusion query off, [1] counting */
    uint32_t dcd1;
-   uint32_t dcd2;
-   uint32_t zsd[8];               /* v11 Depth/stencil descriptor */
+   uint32_t dcd2;                 /* v11 only; 0 on v9 */
+   uint32_t zsd[8];               /* Depth/stencil descriptor */
 
    uint8_t rt_count;
    uint8_t rt_written;            /* colour attachments the fragment shader writes */
@@ -214,23 +219,16 @@ struct mali_gfx_pack_input {
    uint32_t view_mask;                 /* multiview, 0 without */
 };
 
-void mali_gfx_pack_state(const struct mali_gfx_pack_input *in,
-                         struct mali_gfx_baked *out);
+MALI_PER_ARCH_DECL(void, gfx_pack_state,
+                   (const struct mali_gfx_pack_input *in, struct mali_gfx_baked *out));
 
 struct mali_device;
 
 /* A small id for a byte string, the same for equal strings for the
  * device's lifetime; 0 on allocation failure (compares unequal to
- * everything at bind). */
+ * everything at bind). mali_device.c, compiled once. */
 uint32_t mali_device_intern_key(struct mali_device *dev, const void *data, size_t size);
 void mali_device_keys_init(struct mali_device *dev);
 void mali_device_keys_finish(struct mali_device *dev);
-
-/*
- * The pipeline ops' bind (the runtime's vkCmdBindPipeline would call it;
- * the per-arch CmdBindPipeline entry point replaces that):
- * mali_cmd_bind_pipeline.
- */
-void mali_pipeline_cmd_bind(struct vk_command_buffer *cmd, struct vk_pipeline *pipeline);
 
 #endif

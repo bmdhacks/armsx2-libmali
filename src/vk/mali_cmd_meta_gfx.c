@@ -21,9 +21,23 @@
  * v9+): opaque blend descriptors for the targets written, a
  * depth/stencil descriptor that takes depth and stencil from the shader,
  * late ZS update when the shader writes depth or stencil.
+ *
+ * Built per arch. The v9 Draw descriptor has no Flags 2 (the tile-buffer
+ * read and write masks), and takes the FAU count in its own field, as
+ * v11's does.
  */
 
+#ifndef PAN_ARCH
+#error "mali_cmd_meta_gfx.c is built per arch: PAN_ARCH must be set"
+#endif
+
+#include "genxml/gen_macros.h"
+
+#if PAN_ARCH >= 10
 #include "mali_cmd_buffer.h"
+#else
+#include "mali_jm.h"
+#endif
 
 #include <string.h>
 
@@ -36,7 +50,6 @@
 
 #include "mali_descriptor_set.h"
 #include "mali_image.h"
-#include "mali_queue.h"
 #include "mali_vk.h"
 
 #define META_FS_CACHE_SIZE 64
@@ -155,7 +168,7 @@ static nir_shader *
 build_fs(struct mali_device *dev, const struct mali_meta_fs_key *key)
 {
    nir_builder bld = nir_builder_init_simple_shader(
-      MESA_SHADER_FRAGMENT, mali_shader_nir_options(dev, MESA_SHADER_FRAGMENT),
+      MESA_SHADER_FRAGMENT, MALI_PER_ARCH(shader_nir_options)(dev, MESA_SHADER_FRAGMENT),
       "mali_meta_fs");
    nir_builder *b = &bld;
 
@@ -258,7 +271,7 @@ build_fs(struct mali_device *dev, const struct mali_meta_fs_key *key)
 }
 
 const struct mali_shader *
-mali_meta_fs_get(struct mali_cmd_buffer *cmd, const struct mali_meta_fs_key *key)
+MALI_PER_ARCH(meta_fs_get)(struct mali_cmd_buffer *cmd, const struct mali_meta_fs_key *key)
 {
    struct mali_device *dev = cmd->dev;
    struct mali_shader *s = NULL;
@@ -277,7 +290,7 @@ mali_meta_fs_get(struct mali_cmd_buffer *cmd, const struct mali_meta_fs_key *key
    }
    if (mg && !s && mg->count < META_FS_CACHE_SIZE) {
       nir_shader *nir = build_fs(dev, key);
-      mali_shader_preprocess(dev, nir);
+      MALI_PER_ARCH(shader_preprocess)(dev, nir);
 
       const struct vk_pipeline_robustness_state rs = {
          .storage_buffers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT,
@@ -297,7 +310,7 @@ mali_meta_fs_get(struct mali_cmd_buffer *cmd, const struct mali_meta_fs_key *key
       _mesa_blake3_update(&h, key, sizeof(*key));
       _mesa_blake3_final(&h, hash);
 
-      if (mali_shader_compile(dev, &info, hash, &s) == VK_SUCCESS) {
+      if (MALI_PER_ARCH(shader_compile)(dev, &info, hash, &s) == VK_SUCCESS) {
          mg->e[mg->count].key = *key;
          mg->e[mg->count].shader = s;
          mg->count++;
@@ -313,39 +326,39 @@ mali_meta_fs_get(struct mali_cmd_buffer *cmd, const struct mali_meta_fs_key *key
 }
 
 void
-mali_meta_gfx_finish(struct mali_device *dev)
+MALI_PER_ARCH(meta_gfx_finish)(struct mali_device *dev)
 {
    struct mali_meta_gfx *mg = dev->meta_gfx;
    if (!mg)
       return;
    for (unsigned t = 0; t < ARRAY_SIZE(mg->copy); t++) {
       for (unsigned i = 0; i < ARRAY_SIZE(mg->copy[t]); i++)
-         mali_shader_unref(dev, mg->copy[t][i]);
+         MALI_PER_ARCH(shader_unref)(dev, mg->copy[t][i]);
    }
    for (unsigned i = 0; i < mg->count; i++)
-      mali_shader_unref(dev, mg->e[i].shader);
+      MALI_PER_ARCH(shader_unref)(dev, mg->e[i].shader);
    free(mg);
    dev->meta_gfx = NULL;
 }
 
 bool
-mali_cmd_pack_plane_texture(struct mali_cmd_buffer *cmd, const struct mali_image *image,
-                            unsigned plane, enum pipe_format format, unsigned level,
-                            unsigned first_layer, unsigned layer_count, uint32_t out[8])
+MALI_PER_ARCH(cmd_pack_plane_texture)(struct mali_cmd_buffer *cmd, const struct mali_image *image,
+                                      unsigned plane, enum pipe_format format, unsigned level,
+                                      unsigned first_layer, unsigned layer_count, uint32_t out[8])
 {
    struct mali_ptr p = mali_cmd_alloc(cmd, mali_image_plane_texture_desc_size(layer_count), 64);
    if (!p.cpu)
       return false;
-   mali_image_pack_plane_texture(image, plane, format, level, first_layer, layer_count,
-                                 p.cpu, p.gpu, out);
+   MALI_PER_ARCH(image_pack_plane_texture)(image, plane, format, level, first_layer, layer_count,
+                                           p.cpu, p.gpu, out);
    return true;
 }
 
 bool
-mali_meta_fs_dcd(struct mali_cmd_buffer *cmd, const struct mali_shader *fs,
-                 const struct mali_meta_fs_key *key, const struct mali_meta_fs_push *push,
-                 const uint32_t (*textures)[8], unsigned texture_count,
-                 const uint32_t *sampler, bool frame_shader, void *out)
+MALI_PER_ARCH(meta_fs_dcd)(struct mali_cmd_buffer *cmd, const struct mali_shader *fs,
+                           const struct mali_meta_fs_key *key, const struct mali_meta_fs_push *push,
+                           const uint32_t (*textures)[8], unsigned texture_count,
+                           const uint32_t *sampler, bool frame_shader, void *out)
 {
    struct mali_render_state *r = &cmd->gfx.render;
    assert(r->tsd);
@@ -402,7 +415,7 @@ mali_meta_fs_dcd(struct mali_cmd_buffer *cmd, const struct mali_shader *fs,
       for (unsigned i = 0; i < blend_count; i++) {
          uint32_t *w = (uint32_t *)((uint8_t *)bl.cpu + i * pan_size(BLEND));
          if ((written & BITFIELD_BIT(i)) && i < r->desc.rt_count && r->desc.rt[i].image) {
-            mali_pack_opaque_blend(r->desc.rt[i].format, i, w);
+            MALI_PER_ARCH(pack_opaque_blend)(r->desc.rt[i].format, i, w);
          } else {
             pan_cast_and_pack(w, BLEND, cfg) {
                cfg.enable = false;
@@ -414,7 +427,7 @@ mali_meta_fs_dcd(struct mali_cmd_buffer *cmd, const struct mali_shader *fs,
       blend = bl.gpu;
    }
 
-   uint64_t fau = mali_cmd_gfx_fau(cmd, fs, &sv, push, sizeof(*push));
+   uint64_t fau = MALI_PER_ARCH(cmd_gfx_fau)(cmd, fs, &sv, push, sizeof(*push));
    if (fs->fau.total_count && !fau)
       return false;
 
@@ -458,10 +471,12 @@ mali_meta_fs_dcd(struct mali_cmd_buffer *cmd, const struct mali_shader *fs,
       cfg.flags_0.occlusion_query = MALI_OCCLUSION_MODE_DISABLED;
       cfg.flags_1.sample_mask = 0xffff;
       cfg.flags_1.render_target_mask = written;
+#if PAN_ARCH >= 10
       cfg.flags_2.write_mask = written;
       cfg.flags_2.read_mask = 0;
       cfg.flags_2.no_shader_depth_read = true;
       cfg.flags_2.no_shader_stencil_read = true;
+#endif
       cfg.blend = blend;
       cfg.blend_count = blend_count;
       cfg.depth_stencil = zsd.gpu;
@@ -526,7 +541,7 @@ build_copy(struct mali_device *dev, unsigned elem_log2, bool src_tex)
    raw_block_type(elem, &comps, &bits);
 
    nir_builder bld = nir_builder_init_simple_shader(
-      MESA_SHADER_COMPUTE, mali_shader_nir_options(dev, MESA_SHADER_COMPUTE),
+      MESA_SHADER_COMPUTE, MALI_PER_ARCH(shader_nir_options)(dev, MESA_SHADER_COMPUTE),
       "mali_meta_copy_%s%u", src_tex ? "tex" : "image", elem);
    nir_builder *b = &bld;
    b->shader->info.workgroup_size[0] = MALI_META_COPY_WG;
@@ -585,7 +600,7 @@ copy_get(struct mali_cmd_buffer *cmd, unsigned elem_log2, bool src_tex)
       s = mg->copy[src_tex][elem_log2];
       if (!s) {
          nir_shader *nir = build_copy(dev, elem_log2, src_tex);
-         mali_shader_preprocess(dev, nir);
+         MALI_PER_ARCH(shader_preprocess)(dev, nir);
          const struct vk_pipeline_robustness_state rs = {
             .storage_buffers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT,
             .uniform_buffers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT,
@@ -600,7 +615,7 @@ copy_get(struct mali_cmd_buffer *cmd, unsigned elem_log2, bool src_tex)
                              src_tex ? 18 : 20);
          _mesa_blake3_update(&h, &elem_log2, sizeof(elem_log2));
          _mesa_blake3_final(&h, hash);
-         if (mali_shader_compile(dev, &info, hash, &s) != VK_SUCCESS)
+         if (MALI_PER_ARCH(shader_compile)(dev, &info, hash, &s) != VK_SUCCESS)
             s = NULL;
          mg->copy[src_tex][elem_log2] = s;
       }
@@ -613,13 +628,13 @@ copy_get(struct mali_cmd_buffer *cmd, unsigned elem_log2, bool src_tex)
 }
 
 const struct mali_shader *
-mali_meta_copy_get(struct mali_cmd_buffer *cmd, unsigned elem_log2)
+MALI_PER_ARCH(meta_copy_get)(struct mali_cmd_buffer *cmd, unsigned elem_log2)
 {
    return copy_get(cmd, elem_log2, false);
 }
 
 const struct mali_shader *
-mali_meta_copy_tex_get(struct mali_cmd_buffer *cmd, unsigned elem_log2)
+MALI_PER_ARCH(meta_copy_tex_get)(struct mali_cmd_buffer *cmd, unsigned elem_log2)
 {
    return copy_get(cmd, elem_log2, true);
 }

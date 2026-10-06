@@ -4,23 +4,33 @@
  */
 
 /*
- * One pipeline stage from NIR to an uploaded v11 shader (mali_shader.h).
+ * One pipeline stage from NIR to an uploaded shader (mali_shader.h), built
+ * per arch (v9 and v11).
  *
- * The lowering follows panvk at PAN_ARCH 11 (Mesa src/panfrost/vulkan/
+ * The lowering follows panvk's v9+ path (Mesa src/panfrost/vulkan/
  * panvk_vX_shader.c, MIT) step for step, because the shaders come from the
- * same compiler and the draw code will follow panvk's FAU and
- * descriptor model. Left out: Bifrost paths, cooperative matrices, YCbCr,
- * tile images, pipeline executables. Where the code goes differs from
- * panvk: shader code in the device's executable pool (kbase GPU_EX
- * memory in the 4 GiB executable zone, 128-byte aligned), SPDs in the
- * pipeline descriptor pool.
+ * same compiler and the draw code follows panvk's FAU and descriptor
+ * model. Left out: Bifrost paths, cooperative matrices, YCbCr, tile
+ * images, pipeline executables. Where the code goes differs from panvk:
+ * shader code in the device's executable pool (kbase GPU_EX memory in the
+ * 4 GiB executable zone, 128-byte aligned), SPDs in the pipeline
+ * descriptor pool.
+ *
+ * v9 and v11 differ here only in the uniform-buffer words pushed into FAU
+ * (v11 only, "Dynamic uniform buffers in FAU"); the SPD and Shader
+ * Environment layouts are the same, and kraid takes the arch from the GPU
+ * ID.
  */
 
-#define PAN_ARCH MALI_PAN_ARCH
+#ifndef PAN_ARCH
+#error "mali_shader.c is built per arch: PAN_ARCH must be set"
+#endif
 #include "genxml/gen_macros.h"
 
 #include "mali_shader.h"
+#if PAN_ARCH >= 10
 #include "mali_cs.h"
+#endif
 #include "mali_vk.h"
 
 #include <stdlib.h>
@@ -40,10 +50,6 @@
 #include "vk_pipeline.h"
 
 #include "mali_compiler.h"
-
-#if PAN_ARCH != 11
-#error "mali_shader.c is written for arch v11"
-#endif
 
 /* ---------------------------------------------------------------------- */
 /* System values                                                           */
@@ -425,6 +431,8 @@ lower_load_push_consts(nir_shader *nir, struct mali_shader *s)
 /* ---------------------------------------------------------------------- */
 /* Dynamic uniform buffers in FAU                                          */
 
+#if PAN_ARCH >= 10
+
 /* The FAU block may hold this many words once the uniform-buffer words are
  * added; the rest is left for constants the backend promotes. */
 #define UBO_PUSH_FAU_LIMIT 48
@@ -533,18 +541,29 @@ lower_ubo_push(nir_shader *nir, struct mali_shader *s)
             nir_metadata_control_flow, &ctx);
    s->fau.total_count += n;
 }
+#else
+/* v9: nothing is pushed. The words are copied per draw with command-stream
+ * loads and stores on v11, and the job manager has no such instructions;
+ * shaders load from the buffer. */
+static void
+lower_ubo_push(nir_shader *nir, struct mali_shader *s)
+{
+   s->fau.ubo_push_start = s->fau.total_count;
+   s->fau.ubo_push_count = 0;
+}
+#endif
 
 /* ---------------------------------------------------------------------- */
 /* Options and lowering                                                    */
 
 const struct nir_shader_compiler_options *
-mali_shader_nir_options(struct mali_device *dev, mesa_shader_stage stage)
+MALI_PER_ARCH(shader_nir_options)(struct mali_device *dev, mesa_shader_stage stage)
 {
    return pan_get_nir_shader_compiler_options(PAN_ARCH, stage, false);
 }
 
 struct spirv_to_nir_options
-mali_shader_spirv_options(const struct vk_pipeline_robustness_state *rs)
+MALI_PER_ARCH(shader_spirv_options)(const struct vk_pipeline_robustness_state *rs)
 {
    (void)rs;
    return (struct spirv_to_nir_options){
@@ -562,7 +581,7 @@ mali_shader_spirv_options(const struct vk_pipeline_robustness_state *rs)
 }
 
 void
-mali_shader_preprocess(struct mali_device *dev, nir_shader *nir)
+MALI_PER_ARCH(shader_preprocess)(struct mali_device *dev, nir_shader *nir)
 {
    const struct mali_physical_device *pdev = mali_device_physical(dev);
 
@@ -1222,10 +1241,11 @@ spd_stage(mesa_shader_stage stage)
 
 /*
  * Copy the code into the executable pool and build the SPDs, using
- * panvk's v11 shapes. The code is padded to 128 bytes with zeros; kraid
+ * panvk's v9+ shapes (the same on v9 and v11). The code is padded to 128 bytes with zeros; kraid
  * pads its output already, the memset covers the rest of the
  * sub-allocation. Both pools are CPU-uncached: no cache maintenance.
  */
+#if PAN_ARCH >= 10
 /*
  * The command-stream words that copy a fragment shader's pushed
  * uniform-buffer words (fau.ubo_push) into its FAU block when they all
@@ -1325,11 +1345,16 @@ build_ubo_copy(struct mali_shader *s)
    s->ubo_copy.end = s->fau.ubo_push[n - 1].offset + 8;
    s->ubo_copy.count = c;
 }
+#endif
 
 static VkResult
 shader_upload(struct mali_device *dev, struct mali_shader *s)
 {
+#if PAN_ARCH >= 10
    build_ubo_copy(s);
+#else
+   s->ubo_copy.count = 0;
+#endif
 
    if (!s->bin_size)
       return VK_SUCCESS;
@@ -1420,7 +1445,7 @@ shader_alloc(struct mali_device *dev, mesa_shader_stage stage, const void *key,
 
    assert(key_size == sizeof(s->key));
    memcpy(s->key, key, sizeof(s->key));
-   vk_pipeline_cache_object_init(&dev->vk, &s->base, &mali_shader_cache_ops,
+   vk_pipeline_cache_object_init(&dev->vk, &s->base, &MALI_PER_ARCH(shader_cache_ops),
                                  s->key, sizeof(s->key));
    s->stage = stage;
    return s;
@@ -1437,16 +1462,16 @@ shader_destroy(struct mali_device *dev, struct mali_shader *s)
 }
 
 void
-mali_shader_unref(struct mali_device *dev, struct mali_shader *s)
+MALI_PER_ARCH(shader_unref)(struct mali_device *dev, struct mali_shader *s)
 {
    if (s)
       vk_pipeline_cache_object_unref(&dev->vk, &s->base);
 }
 
 VkResult
-mali_shader_compile(struct mali_device *dev,
-                    const struct mali_shader_compile_info *info,
-                    const blake3_hash key, struct mali_shader **out)
+MALI_PER_ARCH(shader_compile)(struct mali_device *dev,
+                              const struct mali_shader_compile_info *info,
+                              const blake3_hash key, struct mali_shader **out)
 {
    const struct mali_physical_device *pdev = mali_device_physical(dev);
    nir_shader *nir = info->nir;
@@ -1482,6 +1507,14 @@ mali_shader_compile(struct mali_device *dev,
       lower_nir(nir, info, s, false);
 
       if (inputs.view_mask) {
+#if PAN_ARCH < 10
+         /* The lowering below relies on the v10+ tiler's view mask; v9
+          * would need a draw per view (panvk's pre-v10 path), which the
+          * job-manager back half does not do. ARMSX2 has no multiview. */
+         result = vk_errorf(dev, VK_ERROR_FEATURE_NOT_PRESENT,
+                            "multiview pipelines are not supported on v9");
+         goto fail;
+#endif
          nir_lower_multiview_options mv = {
             .view_mask = inputs.view_mask,
             .allowed_per_view_outputs = ~0,
@@ -1698,13 +1731,13 @@ shader_cache_destroy(struct vk_device *vk_dev, struct vk_pipeline_cache_object *
    shader_destroy(dev, container_of(object, struct mali_shader, base));
 }
 
-const struct vk_pipeline_cache_object_ops mali_shader_cache_ops = {
+const struct vk_pipeline_cache_object_ops MALI_PER_ARCH(shader_cache_ops) = {
    .serialize = shader_serialize,
    .deserialize = shader_deserialize,
    .destroy = shader_cache_destroy,
 };
 
-const struct vk_pipeline_cache_object_ops *const mali_pipeline_cache_import_ops[] = {
-   &mali_shader_cache_ops,
+const struct vk_pipeline_cache_object_ops *const MALI_PER_ARCH(pipeline_cache_import_ops)[] = {
+   &MALI_PER_ARCH(shader_cache_ops),
    NULL,
 };

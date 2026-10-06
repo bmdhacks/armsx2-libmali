@@ -10,8 +10,12 @@
  * mali_cmd_state.[ch] (binds, the per-draw descriptor builders and dirty
  * bits), mali_cmd_render.c (tiler descriptors, fragment jobs),
  * mali_cmd_draw.c (draws, full-screen draws) and mali_cmd_meta_gfx.c
- * (internal fragment shaders for preloads, clears and blits). The first
- * two are shared with the job-manager back half.
+ * (internal fragment shaders for preloads, clears and blits). mali_fb.c,
+ * mali_cmd_state.[ch] and mali_cmd_meta_gfx.c are shared with the
+ * job-manager back half and built per arch, as are the back halves'
+ * functions declared here (mali_cmd_render.c and mali_cmd_draw.c on v11,
+ * the mali_jm_* files on v9): every function below has a mali_v9_ and a
+ * mali_v11_ variant (MALI_PER_ARCH).
  */
 
 #ifndef MALI_CMD_GFX_H
@@ -23,16 +27,56 @@
 #include "util/format/u_formats.h"
 #include "vulkan/vulkan_core.h"
 
+#include "kbase/kbase.h"
+#include "util/list.h"
+
+#include "mali_arch.h"
+#include "mali_descriptor_set_layout.h"
 #include "mali_pipeline.h"
 
 struct mali_cmd_buffer;
+struct mali_descriptor_set;
 struct mali_device;
 struct mali_graphics_pipeline;
 struct mali_image;
 struct mali_shader;
 
-/* v11: one Tiler Context covers 8 layers. */
+/* ---------------------------------------------------------------------- */
+/* Command-buffer memory (both back halves)                                */
+
+/* Command-buffer memory comes in 64 KiB slabs recycled through the device;
+ * anything larger gets its own allocation, freed at reset. */
+#define MALI_CMD_SLAB_SIZE (64 * 1024)
+
+struct mali_cmd_slab {
+   struct list_head link;
+   struct mali_kbase_bo bo;
+   bool recycle;             /* a standard slab (else a dedicated BO) */
+};
+
+struct mali_ptr {
+   void *cpu;
+   uint64_t gpu;
+};
+
+/* The slow path of mali_cmd_alloc (the back half's command buffer
+ * header): a new slab, or a dedicated allocation for a large block. */
+MALI_PER_ARCH_DECL(struct mali_ptr, cmd_alloc_slow,
+                   (struct mali_cmd_buffer *cmd, uint64_t size, uint64_t align));
+
+/* Descriptor sets bound at one bind point, with their dynamic offsets. */
+struct mali_desc_state {
+   struct mali_descriptor_set *sets[MALI_MAX_SETS];
+   uint32_t dyn_offsets[MALI_MAX_SETS][MALI_MAX_DYNAMIC_BUFFERS];
+};
+
+/* Layers one Tiler Context covers: 8 on v11, 1 on v9 (Mesa v9, panvk JM
+ * and the T820 blob use one per layer). Per-arch code only. */
+#if defined(PAN_ARCH) && PAN_ARCH < 10
+#define MALI_LAYERS_PER_TILER_CTX 1
+#else
 #define MALI_LAYERS_PER_TILER_CTX 8
+#endif
 #define MALI_MAX_RENDER_LAYERS 256
 #define MALI_MAX_VBS 16
 
@@ -193,14 +237,15 @@ struct mali_gfx_draw_state {
 /* mali_cmd_render.c (the back half's render pass; JM: mali_jm_cmd_render.c) */
 
 /* Start a render pass instance. rt/z/s images must be bound. */
-void mali_cmd_render_begin(struct mali_cmd_buffer *cmd, const struct mali_render_desc *desc);
+MALI_PER_ARCH_DECL(void, cmd_render_begin,
+                   (struct mali_cmd_buffer *cmd, const struct mali_render_desc *desc));
 /* End it: tiling finished, fragment jobs, heap release. */
-void mali_cmd_render_end(struct mali_cmd_buffer *cmd);
+MALI_PER_ARCH_DECL(void, cmd_render_end, (struct mali_cmd_buffer *cmd));
 
 /* Before the first tiled job of the pass: tiler contexts, the pass TSD,
  * HEAP_OPERATION{Vertex/Tiler Started}. False on allocation failure (the
  * command buffer has the error). */
-bool mali_cmd_render_tiler(struct mali_cmd_buffer *cmd);
+MALI_PER_ARCH_DECL(bool, cmd_render_tiler, (struct mali_cmd_buffer *cmd));
 
 /* ---------------------------------------------------------------------- */
 /* mali_fb.c: the frontend-neutral part of a render pass                   */
@@ -213,11 +258,12 @@ bool mali_cmd_render_tiler(struct mali_cmd_buffer *cmd);
  * back half then makes earlier attachment writes visible to the texture
  * unit.
  */
-bool mali_fb_begin(struct mali_cmd_buffer *cmd, const struct mali_render_desc *desc);
+MALI_PER_ARCH_DECL(bool, fb_begin,
+                   (struct mali_cmd_buffer *cmd, const struct mali_render_desc *desc));
 
 /* Whether the pass needs fragment work: it tiled something, or a stored
  * target is cleared or always written. */
-bool mali_fb_pass_has_work(const struct mali_render_state *r);
+MALI_PER_ARCH_DECL(bool, fb_pass_has_work, (const struct mali_render_state *r));
 
 /*
  * The pass's framebuffer descriptors, one per layer, each followed by its
@@ -230,20 +276,22 @@ bool mali_fb_pass_has_work(const struct mali_render_state *r);
  * FBD pointer and *size_out the size of one layer's descriptors; 0 on
  * failure.
  */
-uint64_t mali_fb_build(struct mali_cmd_buffer *cmd, struct mali_render_state *r,
-                       uint32_t *size_out);
+MALI_PER_ARCH_DECL(uint64_t, fb_build,
+                   (struct mali_cmd_buffer *cmd, struct mali_render_state *r,
+                    uint32_t *size_out));
 
 /* Fills the pass's Local Storage descriptor (allocated by
  * mali_fb_alloc_tsd, mali_cmd_state.h): TLS for the largest per-thread
  * need of the pass's shaders, no workgroup memory. */
-void mali_fb_fill_tsd(struct mali_cmd_buffer *cmd, struct mali_render_state *r);
+MALI_PER_ARCH_DECL(void, fb_fill_tsd,
+                   (struct mali_cmd_buffer *cmd, struct mali_render_state *r));
 
 /* ---------------------------------------------------------------------- */
 /* mali_cmd_state.c                                                        */
 
 /* The per-thread TLS buffer of the command buffer, grown to at least
  * tls_size bytes per thread. 0 on failure. */
-uint64_t mali_cmd_tls_buffer(struct mali_cmd_buffer *cmd, uint32_t tls_size);
+MALI_PER_ARCH_DECL(uint64_t, cmd_tls_buffer, (struct mali_cmd_buffer *cmd, uint32_t tls_size));
 
 /*
  * Transaction elimination (CRC).
@@ -255,10 +303,11 @@ uint64_t mali_cmd_tls_buffer(struct mali_cmd_buffer *cmd, uint32_t tls_size);
  * every pass reads it, so the bump lands between the passes before and
  * after it in recording order. No-op for images without CRC.
  */
-void mali_cmd_crc_invalidate(struct mali_cmd_buffer *cmd, const struct mali_image *image);
+MALI_PER_ARCH_DECL(void, cmd_crc_invalidate,
+                   (struct mali_cmd_buffer *cmd, const struct mali_image *image));
 
 /* Knobs for the device CRC test; the driver runs with the defaults
- * (mali_fb.c). */
+ * (mali_image.c, compiled once: one set for both arches). */
 struct mali_crc_options {
    bool disable;               /* no CRC at all */
    bool skip_copy_invalidate;  /* tests only: copies leave the CRC valid */
@@ -266,22 +315,27 @@ struct mali_crc_options {
    bool empty_tile_read;
    bool empty_tile_write;
 };
-extern struct mali_crc_options mali_crc_options;
+/* Hidden like everything in the .so, said here so the per-pass code that
+ * reads it from another file addresses it directly, not through the GOT. */
+extern struct mali_crc_options mali_crc_options __attribute__((visibility("hidden")));
 
 /* A render-target Blend descriptor's words for a colour target (the
  * internal part the fragment shader's BLEND instruction reads;
  * mali_fb.c). */
-void mali_pack_opaque_blend(enum pipe_format format, unsigned rt, uint32_t out[4]);
+MALI_PER_ARCH_DECL(void, pack_opaque_blend,
+                   (enum pipe_format format, unsigned rt, uint32_t out[4]));
 
 /* vkCmdBindPipeline for a graphics pipeline. */
-void mali_cmd_bind_graphics(struct mali_cmd_buffer *cmd, struct mali_graphics_pipeline *p);
+MALI_PER_ARCH_DECL(void, cmd_bind_graphics,
+                   (struct mali_cmd_buffer *cmd, struct mali_graphics_pipeline *p));
 
 /* The FAU block of a graphics-stage shader: its used sysval words, then
  * its used push-constant words, then promoted constants. `sysvals` is a
  * struct mali_graphics_sysvals. Returns the GPU address with the word
  * count in bits 56+, or 0 on failure / no FAU. */
-uint64_t mali_cmd_gfx_fau(struct mali_cmd_buffer *cmd, const struct mali_shader *s,
-                          const void *sysvals, const void *push, uint32_t push_size);
+MALI_PER_ARCH_DECL(uint64_t, cmd_gfx_fau,
+                   (struct mali_cmd_buffer *cmd, const struct mali_shader *s,
+                    const void *sysvals, const void *push, uint32_t push_size));
 
 /* ---------------------------------------------------------------------- */
 /* mali_cmd_draw.c                                                         */
@@ -290,7 +344,7 @@ uint64_t mali_cmd_gfx_fau(struct mali_cmd_buffer *cmd, const struct mali_shader 
 extern bool mali_idvs_bit55;
 
 /* A primitive barrier inside the render pass (by-region dependencies). */
-void mali_cmd_fb_barrier(struct mali_cmd_buffer *cmd);
+MALI_PER_ARCH_DECL(void, cmd_fb_barrier, (struct mali_cmd_buffer *cmd));
 
 /*
  * A full-screen fragment draw on the vertex/tiler subqueue: RUN_FULLSCREEN
@@ -298,9 +352,9 @@ void mali_cmd_fb_barrier(struct mali_cmd_buffer *cmd);
  * base_layer + layer_count). Clobbers the scissor, tiler flags and tiler
  * context registers; the next draw rewrites them.
  */
-void mali_cmd_run_fullscreen(struct mali_cmd_buffer *cmd, uint64_t dcd,
-                             const VkRect2D *rect, uint32_t base_layer,
-                             uint32_t layer_count);
+MALI_PER_ARCH_DECL(void, cmd_run_fullscreen,
+                   (struct mali_cmd_buffer *cmd, uint64_t dcd, const VkRect2D *rect,
+                    uint32_t base_layer, uint32_t layer_count));
 
 /* ---------------------------------------------------------------------- */
 /* mali_cmd_meta_gfx.c                                                     */
@@ -368,9 +422,9 @@ struct mali_meta_fs_push {
 
 /* The compiled shader for a key, cached for the device's lifetime. NULL on
  * failure (the command buffer gets VK_ERROR_OUT_OF_DEVICE_MEMORY). */
-const struct mali_shader *mali_meta_fs_get(struct mali_cmd_buffer *cmd,
-                                           const struct mali_meta_fs_key *key);
-void mali_meta_gfx_finish(struct mali_device *dev);
+MALI_PER_ARCH_DECL(const struct mali_shader *, meta_fs_get,
+                   (struct mali_cmd_buffer *cmd, const struct mali_meta_fs_key *key));
+MALI_PER_ARCH_DECL(void, meta_gfx_finish, (struct mali_device *dev));
 
 /*
  * Raw block copies between image planes and buffers (mali_cmd_image.c),
@@ -389,13 +443,14 @@ struct mali_meta_copy_push {
 
 #define MALI_META_COPY_WG 8
 
-const struct mali_shader *mali_meta_copy_get(struct mali_cmd_buffer *cmd, unsigned elem_log2);
+MALI_PER_ARCH_DECL(const struct mali_shader *, meta_copy_get,
+                   (struct mali_cmd_buffer *cmd, unsigned elem_log2));
 
 /* The same copy with the source read through texture 0 (a 2D array of the
  * copied layers, in the uint format of the block size) at (src_x + x,
  * src_y + y, z): for AFBC sources, which have no raw addressing. */
-const struct mali_shader *mali_meta_copy_tex_get(struct mali_cmd_buffer *cmd,
-                                                 unsigned elem_log2);
+MALI_PER_ARCH_DECL(const struct mali_shader *, meta_copy_tex_get,
+                   (struct mali_cmd_buffer *cmd, unsigned elem_log2));
 
 /*
  * Pack into `out` (a Draw descriptor, 64-byte aligned) the frame-shader or
@@ -404,18 +459,18 @@ const struct mali_shader *mali_meta_copy_tex_get(struct mali_cmd_buffer *cmd,
  * (one per output that reads), `sampler` a packed Sampler (NULL: nearest).
  * False on failure.
  */
-bool mali_meta_fs_dcd(struct mali_cmd_buffer *cmd, const struct mali_shader *fs,
-                      const struct mali_meta_fs_key *key,
-                      const struct mali_meta_fs_push *push,
-                      const uint32_t (*textures)[8], unsigned texture_count,
-                      const uint32_t *sampler, bool frame_shader, void *out);
+MALI_PER_ARCH_DECL(bool, meta_fs_dcd,
+                   (struct mali_cmd_buffer *cmd, const struct mali_shader *fs,
+                    const struct mali_meta_fs_key *key, const struct mali_meta_fs_push *push,
+                    const uint32_t (*textures)[8], unsigned texture_count,
+                    const uint32_t *sampler, bool frame_shader, void *out));
 
 /* A 2D (array) Texture descriptor for one level and a layer range of an
  * image plane, read as `format` (mali_image_view.c). The plane
  * descriptors go into command-buffer memory. False on failure. */
-bool mali_cmd_pack_plane_texture(struct mali_cmd_buffer *cmd, const struct mali_image *image,
-                                 unsigned plane, enum pipe_format format, unsigned level,
-                                 unsigned first_layer, unsigned layer_count,
-                                 uint32_t out[8]);
+MALI_PER_ARCH_DECL(bool, cmd_pack_plane_texture,
+                   (struct mali_cmd_buffer *cmd, const struct mali_image *image,
+                    unsigned plane, enum pipe_format format, unsigned level,
+                    unsigned first_layer, unsigned layer_count, uint32_t out[8]));
 
 #endif

@@ -37,7 +37,12 @@
 #include "util/list.h"
 #include "util/u_dynarray.h"
 
+/* The command-stream back half's region API (mali_measure_begin) takes its
+ * subqueue enum. The v9 per-arch files include this header only for the
+ * shader dump directory (mali_measure_shader_dir). */
+#if !defined(PAN_ARCH) || PAN_ARCH >= 10
 #include "mali_cs.h"
+#endif
 
 struct mali_cmd_buffer;
 struct mali_device;
@@ -187,8 +192,10 @@ void mali_measure_cmd_destroy(struct mali_cmd_buffer *cmd);
  * finished. Neither stalls the stream. Returns a handle (0 = none: the
  * slot memory could not be allocated).
  */
+#if PAN_ARCH >= 10
 uint32_t mali_measure_begin(struct mali_cmd_buffer *cmd, enum mali_measure_kind kind,
                             enum mali_subqueue sq, uint32_t index);
+#endif
 void mali_measure_end(struct mali_cmd_buffer *cmd, uint32_t handle);
 void mali_measure_info(struct mali_cmd_buffer *cmd, uint32_t handle, uint32_t a,
                        uint32_t b, uint32_t c, uint32_t d);

@@ -17,9 +17,24 @@
  * The fixed-function blend translation and the early-ZS decision are
  * written after Mesa's src/panfrost/lib/pan_blend.c and pan_earlyzs.c
  * (MIT), which are not vendored.
+ *
+ * Built per arch. On v9 (gallium's pan_jm.c and the T820 blob for the
+ * job-manager words; genxml v9.xml for the layouts):
+ *  - TILER_FLAGS is word 0 of the Malloc Vertex job's Primitive section,
+ *    which has no position FIFO format or view mask (v9 has no multiview
+ *    in the tiler) and whose "Allow rotating primitives" defaults to set:
+ *    it is cleared, as the blob never sets it and as v11 has it;
+ *  - DCD Flags 0 has no conservative rasterization or cull-zero-area,
+ *    DCD Flags 1 an 8-bit render target mask, and there is no DCD Flags 2
+ *    (dcd2 stays 0);
+ *  - the Depth/stencil descriptor has no separated dependency tracking;
+ *  - the depth/stencil update may be weak-early (pan_earlyzs.c forces it
+ *    early from v11 only).
  */
 
-#define PAN_ARCH MALI_PAN_ARCH
+#ifndef PAN_ARCH
+#error "mali_pipeline_state.c is built per arch: PAN_ARCH must be set"
+#endif
 #include "genxml/gen_macros.h"
 
 #include "mali_pipeline.h"
@@ -32,9 +47,7 @@
 #include "vk_blend.h"
 #include "vk_format.h"
 
-#if PAN_ARCH != 11
-#error "mali_pipeline_state.c is written for arch v11"
-#endif
+#include "mali_arch.h"
 
 /* ---------------------------------------------------------------------- */
 /* Blend                                                                    */
@@ -466,7 +479,7 @@ struct earlyzs {
 
 /*
  * When depth/stencil testing and the pixel kill happen relative to the
- * shader (pan_earlyzs.c, arch 11: the update can never be weak-early, and
+ * shader (pan_earlyzs.c: from arch 11 the update can never be weak-early;
  * the read-only ZS optimisation exists only on v10).
  */
 static struct earlyzs
@@ -476,7 +489,7 @@ earlyzs_get(const struct pan_shader_info *s, bool writes_zs_or_oq,
    const bool shader_writes_zs = s->fs.writes_depth || s->fs.writes_stencil;
    bool late_update = shader_writes_zs || alpha_to_coverage;
    bool late_kill = shader_writes_zs;
-   const bool force_early_update = true; /* v11+ */
+   const bool force_early_update = PAN_ARCH >= 11;
    const bool force_early_kill = s->fs.early_fragment_tests;
 
    /* Discards and coverage writes change which samples get written. */
@@ -629,7 +642,9 @@ pack_zsd(const struct mali_gfx_pack_input *in, struct mali_gfx_baked *out)
          cfg.depth_clamp_mode = MALI_DEPTH_CLAMP_MODE_BOUNDS;
 
       if (in->fs) {
+#if PAN_ARCH >= 10
          cfg.separated_dependency_tracking = true;
+#endif
          cfg.depth_source = in->fs->info.fs.writes_depth ?
                                MALI_DEPTH_SOURCE_SHADER :
                                MALI_DEPTH_SOURCE_FIXED_FUNCTION;
@@ -791,11 +806,15 @@ pack_flags(const struct mali_gfx_pack_input *in, struct mali_gfx_baked *out)
          cfg.occlusion_query = oq ? MALI_OCCLUSION_MODE_COUNTER : MALI_OCCLUSION_MODE_DISABLED;
          cfg.alpha_to_coverage = a2c;
          cfg.scissor_to_bounding_box = true;
+#if PAN_ARCH >= 10
          cfg.conservative_rast_mode =
             rs->conservative_mode == VK_CONSERVATIVE_RASTERIZATION_MODE_OVERESTIMATE_EXT ?
                MALI_CONSERVATIVE_RAST_MODE_OVER_ESTIMATE :
                MALI_CONSERVATIVE_RAST_MODE_DISABLED;
          cfg.cull_zero_area = true;
+#else
+         assert(rs->conservative_mode == VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT);
+#endif
       }
       out->dcd0[oq] = dcd0.opaque[0];
    }
@@ -807,6 +826,7 @@ pack_flags(const struct mali_gfx_pack_input *in, struct mali_gfx_baked *out)
    }
    out->dcd1 = dcd1.opaque[0];
 
+#if PAN_ARCH >= 10
    struct mali_dcd_flags_2_packed dcd2;
    pan_pack(&dcd2, DCD_FLAGS_2, cfg) {
       cfg.read_mask = out->rt_read;
@@ -817,13 +837,24 @@ pack_flags(const struct mali_gfx_pack_input *in, struct mali_gfx_baked *out)
       }
    }
    out->dcd2 = dcd2.opaque[0];
+#else
+   /* No Flags 2 on v9: the tile-buffer read and write masks have no home. */
+   out->dcd2 = 0;
+#endif
 
    /* Tiler flags; the index type is set per draw. */
    const bool points = prim == MESA_PRIM_POINTS;
    const bool writes_psiz = vs->info.vs.writes_point_size && points;
    const bool fs_reads_prim_id = fs && fs->info.fs.reads_primitive_id;
+#if PAN_ARCH >= 10
    struct mali_primitive_flags_packed tiler;
    pan_pack(&tiler, PRIMITIVE_FLAGS, cfg) {
+#else
+   /* The Primitive section of the Malloc Vertex job; word 0 is the flags. */
+   struct mali_primitive_packed tiler;
+   pan_pack(&tiler, PRIMITIVE, cfg) {
+      cfg.allow_rotating_primitives = false;
+#endif
       cfg.draw_mode = draw_mode(prim);
       cfg.primitive_index_enable = fs_reads_prim_id;
       cfg.primitive_index_override =
@@ -831,13 +862,19 @@ pack_flags(const struct mali_gfx_pack_input *in, struct mali_gfx_baked *out)
       cfg.point_size_array_format = writes_psiz ? MALI_POINT_SIZE_ARRAY_FORMAT_FP16
                                                 : MALI_POINT_SIZE_ARRAY_FORMAT_NONE;
       cfg.layer_index_enable = vs->info.outputs_written & VARYING_BIT_LAYER;
+#if PAN_ARCH >= 10
       cfg.position_fifo_format = (writes_psiz || vs->info.vs.needs_extended_fifo) ?
                                     MALI_FIFO_FORMAT_EXTENDED : MALI_FIFO_FORMAT_BASIC;
+#endif
       cfg.low_depth_cull = cfg.high_depth_cull =
          vk_rasterization_state_depth_clip_enable(rs);
       cfg.secondary_shader = vs->info.vs.secondary_enable && fs != NULL;
       cfg.primitive_restart = dyn->ia.primitive_restart_enable;
+#if PAN_ARCH >= 10
       cfg.view_mask = in->view_mask;
+#else
+      assert(!in->view_mask);
+#endif
    }
    out->tiler_flags = tiler.opaque[0];
 
@@ -848,7 +885,7 @@ pack_flags(const struct mali_gfx_pack_input *in, struct mali_gfx_baked *out)
 }
 
 void
-mali_gfx_pack_state(const struct mali_gfx_pack_input *in, struct mali_gfx_baked *out)
+MALI_PER_ARCH(gfx_pack_state)(const struct mali_gfx_pack_input *in, struct mali_gfx_baked *out)
 {
    const bool keep_dynamic = out->uses_dynamic_state;
 

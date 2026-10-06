@@ -5,7 +5,7 @@
 
 /*
  * The Texture descriptors of an image view, and the plane descriptors they
- * point at, for v11. Follows Mesa's pan_sampled_texture_emit /
+ * point at, built per arch (v9 and v11). Follows Mesa's pan_sampled_texture_emit /
  * pan_storage_texture_emit and the Generic and ASTC 2D plane emitters of
  * pan_texture.c (MIT) for the three layouts images have here, linear,
  * 16x16 u-interleaved and AFBC (emit_afbc_plane); the blob builds the
@@ -18,11 +18,20 @@
  * 3D view has one entry per level; its depth is in the Texture. Samples
  * of a multisampled image share one plane descriptor (slice stride =
  * sample stride).
+ *
+ * v9 and v11 differ only in the plane descriptors: v11's have a 48-bit
+ * pointer with a size-hi word, a 27-bit row stride with the slice stride's
+ * high bits above it, and the plane's width and height; v9's have a 64-bit
+ * pointer, 32-bit sizes and strides and no extent (the T820 blob writes
+ * the same v9 fields).
  */
 
-#define PAN_ARCH MALI_PAN_ARCH
+#ifndef PAN_ARCH
+#error "mali_image_view.c is built per arch: PAN_ARCH must be set"
+#endif
 
 #include "mali_vk.h"
+#include "mali_arch.h"
 #include "mali_image.h"
 
 #include <string.h>
@@ -124,27 +133,31 @@ afbc_hw_mode(enum mali_afbc_mode m)
    case MALI_AFBC_R8G8B8A8: return MALI_AFBC_COMPRESSION_MODE_R8G8B8A8;
    case MALI_AFBC_R10G10B10A2: return MALI_AFBC_COMPRESSION_MODE_R10G10B10A2;
    case MALI_AFBC_R11G11B10: return MALI_AFBC_COMPRESSION_MODE_R11G11B10;
+#if PAN_ARCH >= 10
+   /* v9 has no 16-bit-channel AFBC modes; images there are never AFBC
+    * (mali_image.c). */
    case MALI_AFBC_R16: return MALI_AFBC_COMPRESSION_MODE_R16;
    case MALI_AFBC_R16G16: return MALI_AFBC_COMPRESSION_MODE_R16G16;
    case MALI_AFBC_R16G16B16A16: return MALI_AFBC_COMPRESSION_MODE_R16G16B16A16;
+#endif
    default: UNREACHABLE("no AFBC mode");
    }
 }
 
 unsigned
-mali_image_afbc_hw_mode(const struct mali_image *image, unsigned plane)
+MALI_PER_ARCH(image_afbc_hw_mode)(const struct mali_image *image, unsigned plane)
 {
    return afbc_hw_mode(mali_afbc_mode(image->planes[plane].format));
 }
 
 /* pan_afbc_decompression_mode: a stencil plane read as stencil. */
 unsigned
-mali_image_afbc_hw_read_mode(const struct mali_image *image, unsigned plane,
-                             enum pipe_format view)
+MALI_PER_ARCH(image_afbc_hw_read_mode)(const struct mali_image *image, unsigned plane,
+                                       enum pipe_format view)
 {
    if (view == PIPE_FORMAT_S8_UINT)
       return MALI_AFBC_COMPRESSION_MODE_S8;
-   return mali_image_afbc_hw_mode(image, plane);
+   return MALI_PER_ARCH(image_afbc_hw_mode)(image, plane);
 }
 
 /* What a view reads: one plane of the image, in one format. */
@@ -182,8 +195,13 @@ emit_plane(const struct view_src *src, unsigned level, unsigned layer, void *out
       addr += layer * pl->array_stride;
       slice_stride = image->vk.samples > 1 ? s->surface_stride : 0;
    }
+#if PAN_ARCH >= 10
    const uint32_t width = u_minify(image->vk.extent.width, level);
    const uint32_t height = u_minify(image->vk.extent.height, level);
+#else
+   /* 32-bit sizes and strides (no hi words on v9). */
+   assert(size <= UINT32_MAX && slice_stride <= UINT32_MAX);
+#endif
 
    if (mali_image_is_afbc(image)) {
       /* emit_afbc_plane: the layer's headers; 2D, single-sampled, so no
@@ -195,16 +213,19 @@ emit_plane(const struct view_src *src, unsigned level, unsigned layer, void *out
          cfg.split_block = false;
          cfg.tiled_header = mod & AFBC_FORMAT_MOD_TILED;
          cfg.prefetch = true;
-         cfg.compression_mode = mali_image_afbc_hw_read_mode(image, src->plane, src->format);
+         cfg.compression_mode =
+            MALI_PER_ARCH(image_afbc_hw_read_mode)(image, src->plane, src->format);
          cfg.size = size & BITFIELD_MASK(32);
-         cfg.size_hi = size >> 32;
          cfg.pointer = addr;
          cfg.header_row_stride = s->row_stride;
          cfg.header_slice_size = s->afbc_header_size;
          cfg.header_slice_stride = 0;
+#if PAN_ARCH >= 10
+         cfg.size_hi = size >> 32;
          cfg.header_slice_stride_hi = 0;
          cfg.width = width;
          cfg.height = height;
+#endif
       }
       return;
    }
@@ -219,13 +240,15 @@ emit_plane(const struct view_src *src, unsigned level, unsigned layer, void *out
          cfg.block_width = astc_dim(desc->block.width);
          cfg.block_height = astc_dim(desc->block.height);
          cfg.size = size & BITFIELD_MASK(32);
-         cfg.size_hi = size >> 32;
          cfg.pointer = addr;
          cfg.row_stride = s->row_stride;
          cfg.slice_stride = slice_stride & BITFIELD_MASK(32);
+#if PAN_ARCH >= 10
+         cfg.size_hi = size >> 32;
          cfg.slice_stride_hi = slice_stride >> 32;
          cfg.width = width;
          cfg.height = height;
+#endif
       }
       return;
    }
@@ -234,13 +257,15 @@ emit_plane(const struct view_src *src, unsigned level, unsigned layer, void *out
       cfg.clump_ordering = ordering;
       cfg.clump_format = clump_format(src->format);
       cfg.size = size & BITFIELD_MASK(32);
-      cfg.size_hi = size >> 32;
       cfg.pointer = addr;
       cfg.row_stride = s->row_stride;
       cfg.slice_stride = slice_stride & BITFIELD_MASK(32);
+#if PAN_ARCH >= 10
+      cfg.size_hi = size >> 32;
       cfg.slice_stride_hi = slice_stride >> 32;
       cfg.width = width;
       cfg.height = height;
+#endif
    }
 }
 
@@ -323,7 +348,7 @@ pack_texture(const struct view_src *src, const unsigned char swizzle[4],
 }
 
 VkResult
-mali_image_view_init_descs(struct mali_device *dev, struct mali_image_view *view)
+MALI_PER_ARCH(image_view_init_descs)(struct mali_device *dev, struct mali_image_view *view)
 {
    const struct mali_image *image = container_of(view->vk.image, struct mali_image, vk);
    const VkImageUsageFlags usage = view->vk.usage;
@@ -414,22 +439,10 @@ mali_image_view_init_descs(struct mali_device *dev, struct mali_image_view *view
 }
 
 void
-mali_image_view_finish_descs(struct mali_device *dev, struct mali_image_view *view)
-{
-   mali_bo_pool_free(&dev->desc_pool, &view->plane_descs);
-}
-
-unsigned
-mali_image_plane_texture_desc_size(unsigned layers)
-{
-   return layers * PLANE_DESC_SIZE;
-}
-
-void
-mali_image_pack_plane_texture(const struct mali_image *image, unsigned plane,
-                              enum pipe_format format, unsigned level,
-                              unsigned first_layer, unsigned layers,
-                              void *planes_cpu, uint64_t planes_gpu, uint32_t out[8])
+MALI_PER_ARCH(image_pack_plane_texture)(const struct mali_image *image, unsigned plane,
+                                        enum pipe_format format, unsigned level,
+                                        unsigned first_layer, unsigned layers,
+                                        void *planes_cpu, uint64_t planes_gpu, uint32_t out[8])
 {
    const struct view_src src = {
       .image = image,

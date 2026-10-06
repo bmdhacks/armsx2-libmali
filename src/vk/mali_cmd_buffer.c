@@ -111,7 +111,7 @@ mali_cmd_slabs_finish(struct mali_device *dev)
 }
 
 struct mali_ptr
-mali_cmd_alloc_slow(struct mali_cmd_buffer *cmd, uint64_t size, uint64_t align)
+MALI_PER_ARCH(cmd_alloc_slow)(struct mali_cmd_buffer *cmd, uint64_t size, uint64_t align)
 {
    assert(util_is_power_of_two_nonzero64(align) && align <= 4096);
    size = MAX2(size, 1);
@@ -621,7 +621,7 @@ mali_cmd_add_deps(struct mali_cmd_buffer *cmd, const VkDependencyInfo *info,
        * (image_barrier_invalidates_crc, below). */
       collect_deps(cmd, src, srca, dst, dsta, deps);
       if (image_barrier_invalidates_crc(m))
-         mali_cmd_crc_invalidate(cmd, container_of(vk_image_from_handle(m->image),
+         MALI_PER_ARCH(cmd_crc_invalidate)(cmd, container_of(vk_image_from_handle(m->image),
                                                    struct mali_image, vk));
    }
 }
@@ -977,7 +977,7 @@ MALI_PER_ARCH(CmdPipelineBarrier2)(VkCommandBuffer commandBuffer,
    if (cmd->gfx.render.active && cmd->gfx.render.tiler) {
       const unsigned vt = MALI_SUBQUEUE_VERTEX_TILER, frag = MALI_SUBQUEUE_FRAGMENT;
       if (pDependencyInfo->dependencyFlags & VK_DEPENDENCY_BY_REGION_BIT) {
-         mali_cmd_fb_barrier(cmd);
+         MALI_PER_ARCH(cmd_fb_barrier)(cmd);
          deps.dst[frag].wait_subqueue_mask &= ~BITFIELD_BIT(frag);
          deps.src[frag].wait_sb_mask = 0;
       }
@@ -995,12 +995,12 @@ MALI_PER_ARCH(CmdPipelineBarrier2)(VkCommandBuffer commandBuffer,
 /* Binding                                                                 */
 
 void
-mali_cmd_bind_pipeline(struct mali_cmd_buffer *cmd, struct vk_pipeline *pipeline)
+MALI_PER_ARCH(cmd_bind_pipeline)(struct mali_cmd_buffer *cmd, struct vk_pipeline *pipeline)
 {
    if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_COMPUTE)
       cmd->compute.shader = mali_compute_pipeline(pipeline)->cs;
    else if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS)
-      mali_cmd_bind_graphics(cmd, mali_graphics_pipeline(pipeline));
+      MALI_PER_ARCH(cmd_bind_graphics)(cmd, mali_graphics_pipeline(pipeline));
 }
 
 /* Replaces the runtime's vkCmdBindPipeline, which only calls through the
@@ -1012,7 +1012,7 @@ MALI_PER_ARCH(CmdBindPipeline)(VkCommandBuffer commandBuffer, VkPipelineBindPoin
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(vk_pipeline, pipeline, _pipeline);
    assert(pipeline->bind_point == pipelineBindPoint);
-   mali_cmd_bind_pipeline(cmd, pipeline);
+   MALI_PER_ARCH(cmd_bind_pipeline)(cmd, pipeline);
 }
 
 VKAPI_ATTR void VKAPI_CALL

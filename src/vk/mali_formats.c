@@ -7,58 +7,24 @@
  * Format support: vkGetPhysicalDeviceFormatProperties(2) and
  * vkGetPhysicalDeviceImageFormatProperties(2).
  *
- * The answers come from Mesa's format table for our architecture
- * (pan_format.c, vendored) and the GPU's compressed-format bits
- * (TEXTURE_FEATURES_0), derived the way panvk does
- * (panvk_physical_device.c), because the descriptors that use the formats
- * are packed from the same table. Where the blob's answer differs and the
- * blob's is the safer one we follow it: integer formats get no blend or
- * linear-filter bit, and combined depth/stencil formats have no
- * linear-tiling features. YCbCr formats, sparse images, protected images
+ * The answers come from Mesa's format table for the device's architecture
+ * (pan_format.c, vendored; the per-arch half is mali_format_table.c) and
+ * the GPU's compressed-format bits (TEXTURE_FEATURES_0), derived the way
+ * panvk does (panvk_physical_device.c), because the descriptors that use
+ * the formats are packed from the same table. Where the blob's answer
+ * differs and the blob's is the safer one we follow it: integer formats
+ * get no blend or linear-filter bit, and combined depth/stencil formats
+ * have no linear-tiling features. YCbCr formats, sparse images, protected images
  * and external memory are not supported.
  */
 
-#define PAN_ARCH MALI_PAN_ARCH
-
 #include "mali_vk.h"
 #include "mali_image.h"
-
-#include "pan_format.h"
 
 #include "util/format/u_format.h"
 #include "util/log.h"
 #include "vk_format.h"
 #include "vk_util.h"
-
-static const struct pan_format *
-pan_fmt(enum pipe_format p)
-{
-   return GENX(pan_format_from_pipe_format)(p);
-}
-
-/* Compressed formats are optional in the hardware: TEXTURE_FEATURES_0 has
- * one bit per compressed texture format (pan_query_compressed_formats). */
-static uint32_t
-compressed_format_bits(const struct mali_physical_device *pdev)
-{
-   return pdev->props.texture_features[0] ? pdev->props.texture_features[0]
-                                          : pdev->props.raw_texture_features[0];
-}
-
-static bool
-pipe_format_supported(const struct mali_physical_device *pdev, enum pipe_format p)
-{
-   if (p == PIPE_FORMAT_NONE || !pan_fmt(p)->hw)
-      return false;
-   /* No YCbCr conversion support (and Mesa's subsampled RGB formats are
-    * YUV to the hardware). */
-   if (pan_format_is_yuv(p))
-      return false;
-   if (util_format_is_compressed(p) &&
-       !(compressed_format_bits(pdev) & BITFIELD_BIT(pan_fmt(p)->texfeat_bit)))
-      return false;
-   return true;
-}
 
 unsigned
 mali_format_planes(VkFormat format, enum pipe_format planes[MALI_IMAGE_MAX_PLANES])
@@ -88,48 +54,13 @@ mali_format_planes(VkFormat format, enum pipe_format planes[MALI_IMAGE_MAX_PLANE
 VkFormatFeatureFlags
 mali_format_image_features(const struct mali_physical_device *pdev, VkFormat format)
 {
-   enum pipe_format planes[MALI_IMAGE_MAX_PLANES];
-   const unsigned nplanes = mali_format_planes(format, planes);
-   if (!nplanes)
-      return 0;
-   for (unsigned i = 0; i < nplanes; i++)
-      if (!pipe_format_supported(pdev, planes[i]))
-         return 0;
+   return mali_arch_dispatch(pdev->arch, format_image_features, pdev, format);
+}
 
-   const enum pipe_format p = vk_format_to_pipe_format(format);
-   if (!pipe_format_supported(pdev, p))
-      return 0;
-
-   const struct pan_format *f = pan_fmt(p);
-   const bool integer = util_format_is_pure_integer(p);
-   VkFormatFeatureFlags feat = 0;
-
-   if (f->bind & PAN_BIND_SAMPLER_VIEW) {
-      feat |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT |
-              VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
-      /* Integer and scaled formats filter nearest only. */
-      if (!integer && !util_format_is_scaled(p))
-         feat |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
-   }
-
-   if (f->bind & PAN_BIND_RENDER_TARGET) {
-      feat |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
-      /* The blob reports no blending for integer formats (R32_UINT is
-       * 0xcc87); Vulkan never blends them. */
-      if (!integer)
-         feat |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
-   }
-
-   if (f->bind & PAN_BIND_STORAGE_IMAGE) {
-      feat |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
-      if (p == PIPE_FORMAT_R32_UINT || p == PIPE_FORMAT_R32_SINT)
-         feat |= VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT;
-   }
-
-   if (f->bind & PAN_BIND_DEPTH_STENCIL)
-      feat |= VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
-
-   return feat;
+VkFormatFeatureFlags
+mali_format_buffer_features(const struct mali_physical_device *pdev, VkFormat format)
+{
+   return mali_arch_dispatch(pdev->arch, format_buffer_features, pdev, format);
 }
 
 /* Linear images of a combined depth/stencil format are not offered (the
@@ -141,29 +72,6 @@ linear_features(const struct mali_physical_device *pdev, VkFormat format)
    if (mali_format_planes(format, planes) > 1)
       return 0;
    return mali_format_image_features(pdev, format);
-}
-
-VkFormatFeatureFlags
-mali_format_buffer_features(const struct mali_physical_device *pdev, VkFormat format)
-{
-   const enum pipe_format p = vk_format_to_pipe_format(format);
-   if (vk_format_get_plane_count(format) != 1 || !pipe_format_supported(pdev, p))
-      return 0;
-
-   const struct pan_format *f = pan_fmt(p);
-   VkFormatFeatureFlags feat = 0;
-
-   /* sRGB vertex formats are rejected, as panvk does (Vulkan-Docs issue
-    * 2214). */
-   if ((f->bind & PAN_BIND_VERTEX_BUFFER) && !util_format_is_srgb(p))
-      feat |= VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT;
-   if (f->bind & PAN_BIND_TEXEL_BUFFER)
-      feat |= VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
-              VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT;
-   if ((f->bind & PAN_BIND_TEXEL_BUFFER) &&
-       (p == PIPE_FORMAT_R32_UINT || p == PIPE_FORMAT_R32_SINT))
-      feat |= VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_ATOMIC_BIT;
-   return feat;
 }
 
 VKAPI_ATTR void VKAPI_CALL
