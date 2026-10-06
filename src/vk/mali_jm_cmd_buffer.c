@@ -58,6 +58,7 @@
 
 #include "mali_cmd_state.h"
 
+#include <stdalign.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -248,14 +249,7 @@ link_job(struct mali_cmd_buffer *cmd, struct mali_jm_chain *c, struct mali_ptr j
       h.dependency_1 = dep1;
       h.dependency_2 = tiler_side ? c->tiler_dep : 0;
    }
-   if (c->prev_next)
-      memcpy(c->prev_next, &job.gpu, sizeof(job.gpu));
-   else
-      c->first = job.gpu;
-   c->prev_next = (uint32_t *)((uint8_t *)job.cpu + 24);
-   c->jobs++;
-   if (tiler_side)
-      c->tiler_dep = index;
+   mali_jm_chain_link(c, job, index, tiler_side);
    mali_jm_cmd_note_reset(cmd, job.cpu, NULL, 16);
 }
 
@@ -751,7 +745,8 @@ cmd_create(struct vk_command_pool *pool, VkCommandBufferLevel level,
 {
    struct mali_device *dev = container_of(pool->base.device, struct mali_device, vk);
    struct mali_cmd_buffer *cmd =
-      vk_zalloc(&pool->alloc, sizeof(*cmd), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      vk_zalloc(&pool->alloc, sizeof(*cmd), alignof(struct mali_cmd_buffer),
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!cmd)
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -767,6 +762,7 @@ cmd_create(struct vk_command_pool *pool, VkCommandBufferLevel level,
    util_dynarray_init(&cmd->jm.resets, NULL);
    util_dynarray_init(&cmd->jm.reset_data, NULL);
    list_inithead(&cmd->slabs);
+   mali_jm_draw_tmpl_init(&cmd->jm.draw);
    cmd->vk.dynamic_graphics_state.vi = &cmd->dyn_vi;
    cmd->vk.dynamic_graphics_state.ms.sample_locations = &cmd->dyn_sl;
    cmd->gfx.draw.dirty = MALI_GFX_DIRTY_ALL;

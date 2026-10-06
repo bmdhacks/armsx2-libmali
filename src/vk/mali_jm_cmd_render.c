@@ -50,9 +50,9 @@
  *    primitive a layer; if the tiler takes it as layer 0, an offset of -i
  *    would drop it from every layer but the first. Noysz's arch-9 port
  *    runs one context per layer with offset 0 and passes the layered
- *    rendering tests on a G57. To be confirmed on the device. Draws of a
- *    layered pass therefore have to drop the primitives of other layers
- *    themselves (mali_jm_cmd_draw.c);
+ *    rendering tests on a G57. To be confirmed on the device. A draw of a
+ *    layered pass goes to layer 0's context only: no v9 shader writes a
+ *    layer, so all its primitives are in layer 0 (mali_jm_cmd_draw.c);
  *  - all layers' fragment jobs in one fragment chain (the blob has a chain
  *    per layer): they need no order between them;
  *  - transaction elimination (CRC) is off on v9 until the device shows it

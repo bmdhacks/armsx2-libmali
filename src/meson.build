@@ -200,9 +200,9 @@ libmali_vk_v11 = static_library(
 # arch picks which back half a VkDevice uses (mali_device.c).
 libmali_vk_v9 = static_library(
   'mali_vk_v9',
-  files('vk/mali_jm_cmd_buffer.c', 'vk/mali_jm_cmd_dispatch.c', 'vk/mali_jm_cmd_render.c',
-        'vk/mali_jm_heap.c', 'vk/mali_jm_queue.c', 'vk/mali_jm_sync_file.c', 'vk/mali_sync.c',
-        'vk/mali_wsi.c'),
+  files('vk/mali_jm_cmd_buffer.c', 'vk/mali_jm_cmd_dispatch.c', 'vk/mali_jm_cmd_draw.c',
+        'vk/mali_jm_cmd_render.c', 'vk/mali_jm_heap.c', 'vk/mali_jm_queue.c',
+        'vk/mali_jm_sync_file.c', 'vk/mali_sync.c', 'vk/mali_wsi.c'),
   _vk_per_arch_files,
   mali_entrypoints[0],   # the header only; the tables are libmali_vk's
   include_directories : _vk_inc,

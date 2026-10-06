@@ -5,7 +5,7 @@
 
 /*
  * Internal fragment shaders and their Draw descriptors: attachment
- * preloads (frame shaders), vkCmdClearAttachments and blits.
+ * preloads (frame shaders), vkCmdClearAttachments (entry point too) and blits.
  *
  * The blob compiles its internal shaders from GLSL ES at run time; panvk
  * builds them in NIR (panvk_vX_cmd_frame_shaders.c, lib/pan_fb_nir.c).
@@ -642,4 +642,83 @@ const struct mali_shader *
 MALI_PER_ARCH(meta_copy_tex_get)(struct mali_cmd_buffer *cmd, unsigned elem_log2)
 {
    return copy_get(cmd, elem_log2, true);
+}
+
+/* ---------------------------------------------------------------------- */
+/* vkCmdClearAttachments                                                   */
+
+static enum mali_meta_fs_type
+fs_type(enum pipe_format f)
+{
+   if (util_format_is_pure_uint(f))
+      return MALI_META_FS_UINT;
+   if (util_format_is_pure_sint(f))
+      return MALI_META_FS_SINT;
+   return MALI_META_FS_FLOAT;
+}
+
+/*
+ * A full-screen draw per rectangle with a shader that writes the clear
+ * values (the blob's path; panvk goes through vk_meta and ends in the
+ * same RUN_FULLSCREEN, Mesa's v9 driver in a Fullscreen job). Depth and
+ * stencil are written by the shader (ZS emit), so no depth-bias trick is
+ * needed. The back half's cmd_run_fullscreen draws it: RUN_FULLSCREEN on
+ * v11, one Fullscreen job per layer on v9.
+ */
+VKAPI_ATTR void VKAPI_CALL
+MALI_PER_ARCH(CmdClearAttachments)(VkCommandBuffer commandBuffer, uint32_t attachmentCount,
+                                   const VkClearAttachment *pAttachments, uint32_t rectCount,
+                                   const VkClearRect *pRects)
+{
+   VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
+   struct mali_render_state *r = &cmd->gfx.render;
+
+   if (!r->active || !rectCount || vk_command_buffer_has_error(&cmd->vk))
+      return;
+
+   struct mali_meta_fs_key key = {0};
+   struct mali_meta_fs_push push = {0};
+   bool any = false;
+
+   for (uint32_t i = 0; i < attachmentCount; i++) {
+      const VkClearAttachment *a = &pAttachments[i];
+      if (a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) {
+         const uint32_t rt = a->colorAttachment;
+         if (rt == VK_ATTACHMENT_UNUSED || rt >= r->desc.rt_count || !r->desc.rt[rt].image)
+            continue;
+         key.rt_op[rt] = MALI_META_FS_CLEAR;
+         key.rt_type[rt] = fs_type(r->desc.rt[rt].format);
+         memcpy(push.clear_color[rt], &a->clearValue.color, 16);
+         any = true;
+      }
+      if ((a->aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) && r->desc.z.image) {
+         key.z_op = MALI_META_FS_CLEAR;
+         push.clear_depth = a->clearValue.depthStencil.depth;
+         any = true;
+      }
+      if ((a->aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) && r->desc.s.image) {
+         key.s_op = MALI_META_FS_CLEAR;
+         push.clear_stencil = a->clearValue.depthStencil.stencil;
+         any = true;
+      }
+   }
+   if (!any)
+      return;
+
+   if (!MALI_PER_ARCH(cmd_render_tiler)(cmd)) {
+      vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      return;
+   }
+   const struct mali_shader *fs = MALI_PER_ARCH(meta_fs_get)(cmd, &key);
+   struct mali_ptr dcd = mali_cmd_alloc(cmd, pan_size(DRAW), 64);
+   if (!fs || !dcd.cpu ||
+       !MALI_PER_ARCH(meta_fs_dcd)(cmd, fs, &key, &push, NULL, 0, NULL, false, dcd.cpu)) {
+      vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      return;
+   }
+
+   for (uint32_t i = 0; i < rectCount; i++) {
+      MALI_PER_ARCH(cmd_run_fullscreen)(cmd, dcd.gpu, &pRects[i].rect, pRects[i].baseArrayLayer,
+                                        pRects[i].layerCount);
+   }
 }

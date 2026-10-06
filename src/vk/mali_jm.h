@@ -41,6 +41,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "util/simple_mtx.h"
 #include "util/u_dynarray.h"
@@ -159,8 +160,25 @@ struct mali_jm_reset {
    uint32_t size;
 };
 
+/*
+ * The draw template (mali_jm_cmd_draw.c): a CPU-side image of the next
+ * Malloc Vertex job in cached memory. The draw state's dirty groups
+ * rewrite their words of it; a draw patches its own counts and pointers
+ * and the header, and copies the 384 bytes into command memory in one
+ * pass.
+ */
+struct mali_jm_draw_tmpl {
+   uint32_t w[96] __attribute__((aligned(16)));   /* 16: the most vk_alloc guarantees */
+   uint32_t hdr4;           /* header word 4 without the index: the job type */
+   uint32_t prim0;          /* Primitive word 0 without the index type */
+   uint32_t packet_stride;  /* Allocation's vertex packet stride, for the heap estimate */
+   bool secondary;          /* the varying shader runs (Primitive "Secondary Shader") */
+};
+
 /* Inside the v9 command buffer: what submit reads, and the open batch. */
 struct mali_jm_cmd {
+   struct mali_jm_draw_tmpl draw;
+
    struct util_dynarray batches; /* struct mali_jm_batch, closed batches */
    struct util_dynarray frags;   /* struct mali_jm_frag_seg */
 
@@ -321,6 +339,28 @@ struct mali_ptr mali_jm_cmd_add_job(struct mali_cmd_buffer *cmd, struct mali_jm_
                                     enum mali_job_type type, unsigned size, bool barrier,
                                     uint16_t dep1);
 
+/*
+ * The link half of mali_jm_cmd_add_job, for writers that pack the header
+ * themselves (the draws copy whole jobs from a cached template): job, whose
+ * header already has Index = `index` (taken with ++c->index) and, for a
+ * tiler-side job, Dependency 2 = c->tiler_dep from before this call, goes
+ * behind the chain's last job. Stores the job's address into the previous
+ * header's Next; reads no command memory. The caller notes the header for
+ * re-submission (mali_jm_cmd_note_reset) and handles c->pending first.
+ */
+static inline void
+mali_jm_chain_link(struct mali_jm_chain *c, struct mali_ptr job, uint16_t index, bool tiler_side)
+{
+   if (c->prev_next)
+      memcpy(c->prev_next, &job.gpu, sizeof(job.gpu));
+   else
+      c->first = job.gpu;
+   c->prev_next = (uint32_t *)((uint8_t *)job.cpu + 24);
+   c->jobs++;
+   if (tiler_side)
+      c->tiler_dep = index;
+}
+
 /* A Write Value job on chain c (timestamps, availability, tests). */
 bool mali_jm_cmd_write_value(struct mali_cmd_buffer *cmd, struct mali_jm_chain *c,
                              enum mali_write_value_type type, uint64_t addr, uint64_t value,
@@ -346,6 +386,10 @@ void mali_jm_cmd_barrier(struct mali_cmd_buffer *cmd, VkPipelineStageFlags2 src_
 /* Before a submission runs cmd: restore what earlier runs changed. With
  * dev->lock held, the command buffer not in flight. */
 void mali_jm_cmd_prepare_submit(struct mali_cmd_buffer *cmd);
+
+/* The draw template's words that no draw state owns (mali_jm_cmd_draw.c),
+ * at command buffer creation. */
+void mali_jm_draw_tmpl_init(struct mali_jm_draw_tmpl *t);
 
 /* ---------------------------------------------------------------------- */
 /* Render passes (mali_jm_cmd_render.c) and the tiler heap (mali_jm_heap.c) */
