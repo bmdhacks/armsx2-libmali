@@ -235,15 +235,6 @@ extern const struct vk_command_buffer_ops mali_v9_cmd_buffer_ops;
 extern const struct vk_sync_type mali_v9_sync_type;
 extern const struct vk_sync_type mali_v11_sync_type;
 
-/*
- * Tests only: let physical-device enumeration accept a Mali-G57 (arch 9,
- * job manager). The v9 back half has no command recording yet (design
- * doc §16, G8-G10), so a real G57 is still skipped; host tests of the
- * job-manager queue set this before creating an instance. Not exported
- * from the driver .so.
- */
-extern bool mali_jm_test_enable;
-
 static inline struct mali_physical_device *
 mali_device_physical(struct mali_device *dev)
 {

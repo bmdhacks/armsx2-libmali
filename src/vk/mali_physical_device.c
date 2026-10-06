@@ -67,8 +67,6 @@
 static const struct vk_sync_type *const mali_v11_sync_types[] = { &mali_v11_sync_type, NULL };
 static const struct vk_sync_type *const mali_v9_sync_types[] = { &mali_v9_sync_type, NULL };
 
-bool mali_jm_test_enable;
-
 void
 mali_kbase_log_to_vk(void *user, const char *msg)
 {
@@ -646,11 +644,10 @@ physical_device_create(struct mali_instance *instance, const char *path,
    mali_kbase_destroy(kb);
 
    /* The arch has to match the frontend the kernel speaks: CSF with v11,
-    * the job manager with v9 (design doc §3). Arch 9 is accepted only by
-    * the job-manager host tests until its command recording exists. */
+    * the job manager with v9. */
    const bool arch_ok =
       (pdev->arch == MALI_PAN_ARCH && frontend == MALI_KBASE_FRONTEND_CSF) ||
-      (pdev->arch == 9 && frontend == MALI_KBASE_FRONTEND_JM && mali_jm_test_enable);
+      (pdev->arch == 9 && frontend == MALI_KBASE_FRONTEND_JM);
    char name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
    if (!arch_ok || !mali_device_name(&pdev->props, name, sizeof(name))) {
       mesa_logw("libmali: skipping %s: GPU product 0x%04x (arch %u) is not "
