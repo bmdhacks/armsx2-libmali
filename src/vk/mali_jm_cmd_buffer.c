@@ -472,6 +472,16 @@ mali_jm_cmd_frag(struct mali_cmd_buffer *cmd, bool new_segment)
    struct mali_jm_batch *b = mali_jm_cmd_batch(cmd);
    const uint16_t req = cmd->jm.req;
 
+   /* A fragment -> fragment barrier with a cache flush, on a GPU whose
+    * fragment job slot does not run Cache Flush jobs: a new fragment atom
+    * instead. It follows the previous one in the slot order, and the
+    * kernel flushes and invalidates the caches between atoms. */
+   if (unlikely((req & REQ_FRAG_AFTER_FRAG) && (req & REQ_FRAG_FLUSH) &&
+                !cmd->dev->jm->frag_cache_flush) && b->frag_count &&
+       util_dynarray_element(&cmd->jm.frags, struct mali_jm_frag_seg,
+                             b->frag_first + b->frag_count - 1)->chain.jobs)
+      new_segment = true;
+
    if (new_segment || !b->frag_count) {
       struct mali_jm_frag_seg *seg =
          util_dynarray_grow(&cmd->jm.frags, struct mali_jm_frag_seg, 1);

@@ -145,6 +145,21 @@ struct mali_jm_batch {
 #define MALI_JM_BATCH_MAX_JOBS   1024
 #define MALI_JM_BATCH_MAX_PASSES 16
 
+/*
+ * Inside a render pass the batch cannot close, so one pass's tiling would
+ * be one serial chain of any length: past about 65,530 jobs the 16-bit job
+ * index runs out (the command buffer fails), and long before that one atom
+ * runs for long enough that only soft-stop keeps it under the kernel's 1 s
+ * hard-stop. So a pass's vtc chain is split every MALI_JM_PASS_MAX_JOBS
+ * jobs (mali_jm_cmd_pass_vtc): the open batch ends there, and the pass
+ * continues in a new batch on the same tiler contexts, heap slot and heap
+ * descriptor (the tiler's state is in that memory). The new batch's vtc
+ * atom follows the old one in the slot order, and its fragment work (the
+ * rest of the pass) depends on it. ARMSX2's passes are far shorter; 8192
+ * jobs are a few tens of milliseconds of tiling.
+ */
+#define MALI_JM_PASS_MAX_JOBS 8192
+
 /* mali_jm_cmd::end_req: ordering a barrier recorded in this command buffer
  * asks of work after it, in later command buffers (the queue carries it to
  * the next atom of the slot): the next vtc atom waits for the newest
@@ -405,9 +420,10 @@ void mali_jm_draw_tmpl_init(struct mali_jm_draw_tmpl *t);
  * What a draw (mali_jm_cmd_draw.c) uses of the pass, after
  * MALI_PER_ARCH(cmd_render_tiler) has returned true for it:
  *  - the chain its jobs go into: mali_jm_cmd_pass_vtc (the open batch's
- *    vtc chain; the batch cannot close inside a pass, and the barriers
- *    owed to the pass's vtc work were applied by cmd_render_tiler, so a
- *    draw takes the chain as it is);
+ *    vtc chain; the batch closes inside a pass only at the pass job limit,
+ *    MALI_JM_PASS_MAX_JOBS, and the barriers owed to the pass's vtc work
+ *    were applied by cmd_render_tiler, so a draw takes the chain as it
+ *    is). Call it once per job;
  *  - one Tiler Context per layer: mali_jm_pass_tiler(r, layer), layers
  *    0 .. r->td_count - 1 (MALI_LAYERS_PER_TILER_CTX is 1 on v9);
  *  - the pass's Local Storage descriptor: r->tsd (filled at the end of the
@@ -417,10 +433,14 @@ void mali_jm_draw_tmpl_init(struct mali_jm_draw_tmpl *t);
  *    estimate); the next pass's begin closes the
  *    batch past half a heap slot.
  */
+void mali_jm_cmd_pass_split(struct mali_cmd_buffer *cmd);
+
 static inline struct mali_jm_chain *
 mali_jm_cmd_pass_vtc(struct mali_cmd_buffer *cmd)
 {
    assert(cmd->jm.open && cmd->gfx.render.tiler);
+   if (unlikely(cmd->jm.cur.vtc.jobs >= MALI_JM_PASS_MAX_JOBS))
+      mali_jm_cmd_pass_split(cmd);
    return &cmd->jm.cur.vtc;
 }
 
@@ -556,6 +576,11 @@ struct mali_jm_device {
     * for mali_device_set_lost, which is called without the lock). */
    bool fault;
    char fault_msg[192];
+
+   /* Job slot 0 (fragment) runs Cache Flush jobs (JS0_FEATURES bit 3).
+    * Without it, a fragment-side barrier that needs a cache flush starts a
+    * new fragment atom instead (mali_jm_cmd_frag). */
+   bool frag_cache_flush;
 
    /* STREAM_CREATE's timeline fd for FENCE_TRIGGER (first use), or -1. */
    int stream_fd;

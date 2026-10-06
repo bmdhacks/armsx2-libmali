@@ -1024,6 +1024,8 @@ MALI_PER_ARCH(device_init)(struct mali_device *dev)
    jd->kb = dev->kbase;
    jd->build = b;
    jd->stream_fd = -1;
+   /* JS_FEATURE_CACHE_FLUSH_JOB of the fragment slot. */
+   jd->frag_cache_flush = (dev->kbase->props.js_features[0] >> 3) & 1;
    mali_kbase_jm_atom_ids_init(&jd->ids);
    jd->free_ids = mali_kbase_jm_atom_ids_free_count(&jd->ids);
    mali_jm_heap_init(jd);

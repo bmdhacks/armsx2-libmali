@@ -11,7 +11,9 @@
  * frame shaders, framebuffer descriptors, vkCmdBeginRendering) is in
  * mali_fb.c, shared with the v11 back half.
  *
- * A pass lives inside one batch (mali_jm.h). Its order of events:
+ * A pass lives inside one batch (mali_jm.h), unless it reaches the pass
+ * job limit (MALI_JM_PASS_MAX_JOBS): then it goes on in a new batch on the
+ * same tiler memory (mali_jm_cmd_pass_split). Its order of events:
  *
  *  - begin: the open batch is closed first if it is full (its pass count,
  *    vtc job count or heap estimate); then the shared layout. A pass that
@@ -32,7 +34,8 @@
  *    128-byte Fragment job per layer in the open batch's current fragment
  *    segment, bounding box in 16-pixel tiles. Pending fragment-side
  *    barriers are applied by mali_jm_cmd_frag (a Barrier bit and Cache
- *    Flush job in the chain). A pass with nothing to store writes
+ *    Flush job in the chain, or a new fragment atom where the fragment
+ *    slot runs no Cache Flush jobs). A pass with nothing to store writes
  *    nothing.
  *
  * Differences from the blob's passes and why:
@@ -185,6 +188,21 @@ MALI_PER_ARCH(cmd_render_tiler)(struct mali_cmd_buffer *cmd)
    return true;
 }
 
+/* The pass job limit (MALI_JM_PASS_MAX_JOBS, mali_jm.h): end the open
+ * batch's vtc chain here and go on in a new batch that tiles through the
+ * same heap slot and descriptor. The pass's tiler contexts and Local
+ * Storage descriptor are in command memory and stay as they are. */
+void
+mali_jm_cmd_pass_split(struct mali_cmd_buffer *cmd)
+{
+   const struct mali_jm_batch old = cmd->jm.cur;
+   mali_jm_cmd_batch_close(cmd);
+   struct mali_jm_batch *b = mali_jm_cmd_batch(cmd);
+   b->heap_slot = old.heap_slot;
+   b->heap_desc = old.heap_desc;
+   b->est_heap_bytes = old.est_heap_bytes;
+}
+
 /* ---------------------------------------------------------------------- */
 /* Full-screen jobs                                                        */
 
@@ -229,12 +247,12 @@ fullscreen_jobs(struct mali_cmd_buffer *cmd, uint64_t dcd, const VkRect2D *rect,
       cfg.scissor_maximum_y = maxy;
    }
 
-   struct mali_jm_chain *c = &cmd->jm.cur.vtc;
    const uint32_t end = MIN2(base_layer + layer_count, r->td_count);
    for (uint32_t l = base_layer; l < end; l++) {
       pan_section_pack(tmpl, FULLSCREEN_JOB, TILER, cfg) {
          cfg.address = mali_jm_pass_tiler(r, l);
       }
+      struct mali_jm_chain *c = mali_jm_cmd_pass_vtc(cmd);
       struct mali_ptr job = mali_jm_cmd_add_job(cmd, c, MALI_JOB_TYPE_FULLSCREEN,
                                                 pan_size(FULLSCREEN_JOB), barrier, 0);
       if (!job.cpu)
