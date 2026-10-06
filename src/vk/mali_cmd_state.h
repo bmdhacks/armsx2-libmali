@@ -94,7 +94,13 @@ mali_thread_props(const struct mali_device *dev)
                                                          : p->max_workgroup_size,
       .max_threads_per_core = p->thread_max_threads ? p->thread_max_threads : p->max_threads,
       .max_tasks_per_core = p->thread_features >> 24,
+#if PAN_ARCH >= 10
       .registers_per_core = p->thread_features & 0x3fffff,
+#else
+      /* Before v10, THREAD_FEATURES has the register count in bits 0-15
+       * only; bits 16-23 are the task queue depth. */
+      .registers_per_core = p->thread_features & 0xffff,
+#endif
       .core_count = util_bitcount64(p->shader_present),
       .core_id_range = util_last_bit64(p->shader_present),
    };
@@ -823,6 +829,16 @@ mali_gfx_scissor_box(const struct mali_cmd_buffer *cmd)
    miny = MAX2(sc->offset.y, miny);
    maxx = MIN2(sc->offset.x + (int)sc->extent.width, maxx);
    maxy = MIN2(sc->offset.y + (int)sc->extent.height, maxy);
+#if PAN_ARCH < 10
+   /* Clamp the box to the render area, as Mesa's v9 driver does, rather
+    * than rely on the tiler context's framebuffer size to clip a viewport
+    * that extends past it. */
+   const struct mali_render_state *r = &cmd->gfx.render;
+   minx = MIN2(minx, (int)r->desc.width);
+   miny = MIN2(miny, (int)r->desc.height);
+   maxx = MIN2(maxx, (int)r->desc.width);
+   maxy = MIN2(maxy, (int)r->desc.height);
+#endif
    maxx = maxx > minx ? maxx - 1 : maxx;
    maxy = maxy > miny ? maxy - 1 : maxy;
 

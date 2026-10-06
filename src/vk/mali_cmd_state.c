@@ -232,8 +232,18 @@ MALI_PER_ARCH(cmd_tls_buffer)(struct mali_cmd_buffer *cmd, uint32_t tls_size)
    /* Per thread: the next power of two of the size, at least 16 bytes; for
     * every thread slot of every core (pan_get_total_stack_size). */
    unsigned per_thread = util_next_power_of_two(ALIGN_POT(tls_size, 16));
+#if PAN_ARCH >= 10
+   const unsigned slots = tp.max_threads_per_core;
+#else
+   /* On the job manager the hardware indexes the buffer by TLS thread
+    * slot, and THREAD_TLS_ALLOC (the slot count per core) may be larger
+    * than the thread count, which it rounds up to a power of two. The
+    * kernel reports 0 when the register does not exist; the thread count
+    * is then the slot count (Mesa and kbase both fall back the same way). */
+   const unsigned slots = MAX2(dev->kbase->props.thread_tls_alloc, tp.max_threads_per_core);
+#endif
    if (per_thread > cmd->tls.size) {
-      uint64_t total = (uint64_t)per_thread * tp.max_threads_per_core * tp.core_id_range;
+      uint64_t total = (uint64_t)per_thread * slots * tp.core_id_range;
       /* TLS memory: GPU group 9. */
       struct mali_cmd_slab *s = calloc(1, sizeof(*s));
       const struct mali_kbase_alloc_info ai = {
