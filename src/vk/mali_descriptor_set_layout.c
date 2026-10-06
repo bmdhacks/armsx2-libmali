@@ -11,6 +11,7 @@
 
 #include "mali_vk.h"
 
+#include <assert.h>
 #include <stdlib.h>
 
 #include "vk_descriptors.h"
@@ -81,10 +82,6 @@ mali_CreateDescriptorSetLayout(VkDevice _device,
    uint32_t binding_count = 0, immutable_count = 0;
    VkResult result;
 
-   if (pCreateInfo->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR)
-      return vk_errorf(dev, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "push descriptor set layouts are not supported");
-
    for (uint32_t i = 0; i < pCreateInfo->bindingCount; i++) {
       const VkDescriptorSetLayoutBinding *b = &pCreateInfo->pBindings[i];
       if (!type_supported(b->descriptorType))
@@ -126,6 +123,12 @@ mali_CreateDescriptorSetLayout(VkDevice _device,
 
       if (b->descriptorCount == 0)
          continue;
+
+      /* The spec forbids dynamic buffers in a push-descriptor layout
+       * (vkCmdPushDescriptorSetKHR has nowhere to take a dynamic offset
+       * from), so a push set's slots are never dynamic buffers. */
+      assert(!(layout->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR) ||
+             !vk_descriptor_type_is_dynamic(b->descriptorType));
 
       bl->type = b->descriptorType;
       bl->flags = binding_flags ? binding_flags[i] : 0;
@@ -214,8 +217,6 @@ mali_GetDescriptorSetLayoutSupport(VkDevice _device,
       var->maxVariableDescriptorCount = 0;
 
    pSupport->supported = false;
-   if (pCreateInfo->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR)
-      return;
 
    uint64_t slots = 0;
    uint32_t dyn_ubos = 0, dyn_ssbos = 0;

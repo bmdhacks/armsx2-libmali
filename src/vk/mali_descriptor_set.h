@@ -148,4 +148,22 @@ MALI_PER_ARCH_DECL(void, descriptor_set_pack_dyn_buf,
  * Valhall). out: 32 bytes. */
 MALI_PER_ARCH_DECL(void, pack_dummy_sampler, (void *out));
 
+/* ---------------------------------------------------------------------- */
+/* For push descriptors (VK_KHR_push_descriptor, mali_cmd_state.c): the
+ * same per-type packers vkUpdateDescriptorSets uses, for a set whose
+ * memory the command buffer owns instead of a pool. */
+
+/* Writes the slots set's own layout fixes (an inline uniform block's
+ * self-referencing Buffer descriptor, a binding's immutable samplers).
+ * Idempotent: safe to call again on a set a caller is not sure was
+ * already initialized. set->layout, ->cpu and ->gpu must already be set. */
+MALI_PER_ARCH_DECL(void, descriptor_set_init_fixed_slots,
+                   (struct mali_descriptor_set *set));
+
+/* Applies write_count writes to set, as vkUpdateDescriptorSets would; a
+ * write's dstSet is ignored, as the spec has it for a push. */
+MALI_PER_ARCH_DECL(void, descriptor_set_write,
+                   (struct mali_descriptor_set *set, uint32_t write_count,
+                    const VkWriteDescriptorSet *writes));
+
 #endif

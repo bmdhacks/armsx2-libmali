@@ -269,6 +269,27 @@ init_iub(const struct mali_descriptor_set *set, uint32_t binding)
    write_slot(set, binding, 0, MALI_SUBDESC_NONE, &desc);
 }
 
+/* The slots a set's own layout fixes regardless of what the application
+ * writes: an inline uniform block's self-referencing Buffer descriptor,
+ * and a binding's immutable samplers. Idempotent, so a caller that is not
+ * sure whether it ran already (a push descriptor set reusing its
+ * container after a fresh allocation) can just call it again. */
+static void
+init_fixed_slots(struct mali_descriptor_set *set)
+{
+   const struct mali_descriptor_set_layout *layout = set->layout;
+
+   for (uint32_t b = 0; b < layout->binding_count; b++) {
+      const struct mali_descriptor_set_binding_layout *bl = &layout->bindings[b];
+      if (bl->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK && bl->desc_count) {
+         init_iub(set, b);
+      } else if (bl->immutable_samplers) {
+         for (uint32_t e = 0; e < bl->desc_count; e++)
+            write_slot(set, b, e, sampler_subdesc(bl->type), &bl->immutable_samplers[e]);
+      }
+   }
+}
+
 static void
 write_descriptors(struct mali_descriptor_set *set, const VkWriteDescriptorSet *w)
 {
@@ -597,16 +618,7 @@ pool_alloc_set(struct mali_device *dev, struct mali_descriptor_pool *pool,
    set->layout = layout;
    set->gpu = gpu;
    set->cpu = gpu ? (uint8_t *)pool->bo.cpu + (gpu - pool->bo.gpu_va) : NULL;
-
-   for (uint32_t b = 0; b < layout->binding_count; b++) {
-      const struct mali_descriptor_set_binding_layout *bl = &layout->bindings[b];
-      if (bl->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK && bl->desc_count) {
-         init_iub(set, b);
-      } else if (bl->immutable_samplers) {
-         for (uint32_t e = 0; e < bl->desc_count; e++)
-            write_slot(set, b, e, sampler_subdesc(bl->type), &bl->immutable_samplers[e]);
-      }
-   }
+   init_fixed_slots(set);
 
    *out = set;
    return VK_SUCCESS;
@@ -684,4 +696,23 @@ MALI_PER_ARCH(descriptor_set_pack_dyn_buf)(const struct mali_descriptor_set *set
    assert(idx < set->layout->dyn_buf_count);
    pack_buffer(set->dyn_bufs[idx].addr + dynamic_offset, set->dyn_bufs[idx].range,
                set->layout->dyn_ssbos & BITFIELD_BIT(idx), out);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Push descriptors (VK_KHR_push_descriptor): the command buffer           */
+/* (mali_cmd_state.c) owns the set's storage and its lifetime; this is     */
+/* only the write path, identical to a pool-backed set's.                 */
+
+void
+MALI_PER_ARCH(descriptor_set_init_fixed_slots)(struct mali_descriptor_set *set)
+{
+   init_fixed_slots(set);
+}
+
+void
+MALI_PER_ARCH(descriptor_set_write)(struct mali_descriptor_set *set, uint32_t write_count,
+                                    const VkWriteDescriptorSet *writes)
+{
+   for (uint32_t i = 0; i < write_count; i++)
+      write_descriptors(set, &writes[i]);
 }

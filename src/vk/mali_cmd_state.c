@@ -14,6 +14,7 @@
 #include "mali_cmd_state.h"
 
 #include "vk_buffer.h"
+#include "vk_descriptor_update_template.h"
 #include "vk_pipeline.h"
 #include "vk_pipeline_layout.h"
 
@@ -349,6 +350,163 @@ MALI_PER_ARCH(CmdBindDescriptorSets)(VkCommandBuffer commandBuffer, VkPipelineBi
       .pDynamicOffsets = pDynamicOffsets,
    };
    MALI_PER_ARCH(CmdBindDescriptorSets2KHR)(commandBuffer, &info);
+}
+
+/*
+ * A push descriptor set (VK_KHR_push_descriptor): a set whose storage is
+ * the command buffer's, not a pool's. Pushing always allocates a fresh
+ * block for the set's slots (mali_cmd_alloc, freed only when the command
+ * buffer is reset), so a draw already recorded keeps reading the memory
+ * its resource table pointed at even after a later push changes what is
+ * bound at that set index.
+ *
+ * A binding the push does not mention carries over from the set's last
+ * push in this command buffer: push[idx] is reused as the container across
+ * pushes, so carrying forward is "this is still the same push, add to it"
+ * when sets[idx] is still push[idx] and its layout has not changed; a real
+ * vkCmdBindDescriptorSets at idx (which points sets[idx] elsewhere) or a
+ * command buffer reset (which clears push[idx].layout) both make the next
+ * push start over with nothing carried forward.
+ */
+static struct mali_descriptor_set *
+cmd_push_descriptor_set(struct mali_cmd_buffer *cmd, struct mali_desc_state *st,
+                        const struct mali_descriptor_set_layout *layout, uint32_t idx)
+{
+   struct mali_descriptor_set *set = &st->push[idx];
+   const bool carry = st->sets[idx] == set && set->layout == layout;
+   const uint64_t size = (uint64_t)layout->desc_count * MALI_DESCRIPTOR_SIZE;
+   const void *old_cpu = set->cpu;
+
+   if (size) {
+      struct mali_ptr p = mali_cmd_alloc(cmd, size, MALI_DESCRIPTOR_SIZE);
+      if (!p.cpu)
+         return NULL;
+      if (carry)
+         memcpy(p.cpu, old_cpu, size);
+      set->cpu = p.cpu;
+      set->gpu = p.gpu;
+   } else {
+      set->cpu = NULL;
+      set->gpu = 0;
+   }
+   set->layout = layout;
+   st->sets[idx] = set;
+   MALI_PER_ARCH(descriptor_set_init_fixed_slots)(set);
+   return set;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+MALI_PER_ARCH(CmdPushDescriptorSet2KHR)(VkCommandBuffer commandBuffer,
+                                        const VkPushDescriptorSetInfoKHR *info)
+{
+   VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(vk_pipeline_layout, layout, info->layout);
+
+   assert(info->set < MALI_MAX_SETS);
+   const struct mali_descriptor_set_layout *sl =
+      mali_descriptor_set_layout(layout->set_layouts[info->set]);
+
+   struct mali_desc_state *states[2];
+   unsigned n = 0;
+   if (info->stageFlags & VK_SHADER_STAGE_COMPUTE_BIT)
+      states[n++] = &cmd->compute.desc;
+   if (info->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS)
+      states[n++] = &cmd->gfx.desc;
+
+   if (info->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS) {
+      const uint32_t bit = BITFIELD_BIT(info->set);
+      cmd->gfx.draw.vs_sets_dirty |= bit;
+      cmd->gfx.draw.fs_sets_dirty |= bit;
+   }
+
+   for (unsigned s = 0; s < n; s++) {
+      struct mali_descriptor_set *set =
+         cmd_push_descriptor_set(cmd, states[s], sl, info->set);
+      if (!set) {
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+         return;
+      }
+      MALI_PER_ARCH(descriptor_set_write)(set, info->descriptorWriteCount,
+                                          info->pDescriptorWrites);
+   }
+}
+
+VKAPI_ATTR void VKAPI_CALL
+MALI_PER_ARCH(CmdPushDescriptorSetWithTemplate2KHR)(
+   VkCommandBuffer commandBuffer,
+   const VkPushDescriptorSetWithTemplateInfoKHR *info)
+{
+   VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(vk_pipeline_layout, layout, info->layout);
+   VK_FROM_HANDLE(vk_descriptor_update_template, template, info->descriptorUpdateTemplate);
+
+   assert(info->set < MALI_MAX_SETS);
+   assert(template->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS ||
+          template->bind_point == VK_PIPELINE_BIND_POINT_COMPUTE);
+   const struct mali_descriptor_set_layout *sl =
+      mali_descriptor_set_layout(layout->set_layouts[info->set]);
+
+   struct mali_desc_state *st = template->bind_point == VK_PIPELINE_BIND_POINT_COMPUTE ?
+                                   &cmd->compute.desc : &cmd->gfx.desc;
+
+   if (template->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+      const uint32_t bit = BITFIELD_BIT(info->set);
+      cmd->gfx.draw.vs_sets_dirty |= bit;
+      cmd->gfx.draw.fs_sets_dirty |= bit;
+   }
+
+   struct mali_descriptor_set *set = cmd_push_descriptor_set(cmd, st, sl, info->set);
+   if (!set) {
+      vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      return;
+   }
+
+   for (uint32_t i = 0; i < template->entry_count; i++) {
+      const struct vk_descriptor_template_entry *e = &template->entries[i];
+      const VkWriteDescriptorSet w = {
+         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+         .dstBinding = e->binding,
+         .dstArrayElement = e->array_element,
+         .descriptorCount = e->array_count,
+         .descriptorType = e->type,
+         /*
+          * The template's stride need not match the Vulkan struct's, so
+          * these can only be used for a one-element write (descriptorCount
+          * 1); descriptor_set_write reads pImageInfo/pBufferInfo as
+          * e->array_count-element arrays only for a plain
+          * vkUpdateDescriptorSets call, never for a template, so writing
+          * one element at a time here is required, not just simplest.
+          */
+      };
+      for (uint32_t j = 0; j < e->array_count; j++) {
+         const void *src = (const uint8_t *)info->pData + e->offset + (size_t)j * e->stride;
+         VkWriteDescriptorSet w1 = w;
+         w1.dstArrayElement = e->array_element + j;
+         w1.descriptorCount = 1;
+         switch (e->type) {
+         case VK_DESCRIPTOR_TYPE_SAMPLER:
+         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+         case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+            w1.pImageInfo = src;
+            break;
+         case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+         case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+            w1.pTexelBufferView = src;
+            break;
+         case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
+            /* Push-descriptor layouts have no inline uniform blocks
+             * ARMSX2 uses (mali_descriptor_set_layout.c); not reached by
+             * anything this driver serves. */
+            UNREACHABLE("inline uniform blocks are not pushed");
+         default:
+            w1.pBufferInfo = src;
+            break;
+         }
+         MALI_PER_ARCH(descriptor_set_write)(set, 1, &w1);
+      }
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL
