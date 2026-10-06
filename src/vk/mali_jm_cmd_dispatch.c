@@ -19,6 +19,10 @@
  *  - no Barrier bit of its own: dispatches without a barrier between them
  *    may overlap, as Vulkan allows; a recorded barrier puts the bit (and a
  *    Cache Flush job) in front of the next job (mali_jm_cmd_buffer.c).
+ *
+ * The internal dispatches (cmd_dispatch_shader, cmd_dispatch_meta) are the
+ * transfers done by compute (copies, fills, updates) and meet the barriers
+ * whose destination is only the transfer stages; vkCmdDispatch does not.
  */
 
 #include "mali_cmd_state.h"
@@ -27,7 +31,7 @@ static void
 dispatch(struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
          const struct mali_desc_state *desc, const void *push, uint32_t push_size,
          const uint32_t base[3], const uint32_t groups[3], const uint32_t (*textures)[8],
-         unsigned texture_count)
+         unsigned texture_count, bool xfer)
 {
    if (!cs || !cs->spd[MALI_SPD_MAIN])
       return;
@@ -46,7 +50,7 @@ dispatch(struct mali_cmd_buffer *cmd, const struct mali_shader *cs,
    unsigned axis, inc;
    mali_compute_task_axis(&tp, cs, groups, &axis, &inc);
 
-   struct mali_jm_chain *c = mali_jm_cmd_vtc(cmd);
+   struct mali_jm_chain *c = xfer ? mali_jm_cmd_vtc_transfer(cmd) : mali_jm_cmd_vtc(cmd);
    if (!c)
       return;
    struct mali_ptr job =
@@ -80,7 +84,7 @@ MALI_PER_ARCH(cmd_dispatch_shader)(struct mali_cmd_buffer *cmd, const struct mal
                                    uint32_t push_size, const uint32_t base[3],
                                    const uint32_t groups[3])
 {
-   dispatch(cmd, cs, desc, push, push_size, base, groups, NULL, 0);
+   dispatch(cmd, cs, desc, push, push_size, base, groups, NULL, 0, true);
 }
 
 void
@@ -89,7 +93,7 @@ MALI_PER_ARCH(cmd_dispatch_meta)(struct mali_cmd_buffer *cmd, const struct mali_
                                  const uint32_t (*textures)[8], unsigned texture_count)
 {
    const uint32_t base[3] = {0, 0, 0};
-   dispatch(cmd, cs, NULL, push, push_size, base, groups, textures, texture_count);
+   dispatch(cmd, cs, NULL, push, push_size, base, groups, textures, texture_count, true);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -102,5 +106,5 @@ MALI_PER_ARCH(CmdDispatchBase)(VkCommandBuffer commandBuffer, uint32_t baseGroup
    const uint32_t base[3] = {baseGroupX, baseGroupY, baseGroupZ};
    const uint32_t groups[3] = {groupCountX, groupCountY, groupCountZ};
    dispatch(cmd, cmd->compute.shader, &cmd->compute.desc, cmd->push_constants,
-            sizeof(cmd->push_constants), base, groups, NULL, 0);
+            sizeof(cmd->push_constants), base, groups, NULL, 0, false);
 }

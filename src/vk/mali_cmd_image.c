@@ -31,9 +31,21 @@
  *
  * Depth and stencil planes are copied as colour (R32_UINT / R8_UINT), as
  * panvk does; the compression mode stays the plane's.
+ *
+ * Built per arch. On the job manager (v9) the transfer passes are marked
+ * as fragment-side transfers of their batch (barriers from transfer stages
+ * wait for them, mali_jm.h), and an image -> image copy whose compute job
+ * would close the open batch (a barrier makes it wait for this batch's
+ * fragment work, typically a copy of what a pass just rendered) is done by
+ * the fragment-side copy pass instead, which stays in the batch behind a
+ * barrier in its fragment chain.
  */
 
+#if PAN_ARCH >= 10
 #include "mali_cmd_buffer.h"
+#else
+#include "mali_jm.h"
+#endif
 
 #include <string.h>
 
@@ -47,7 +59,9 @@
 
 #include "mali_arch.h"
 #include "mali_image.h"
+#if PAN_ARCH >= 10
 #include "mali_queue.h"
+#endif
 #include "mali_vk.h"
 
 /* ---------------------------------------------------------------------- */
@@ -146,6 +160,17 @@ dispatch_copy(struct mali_cmd_buffer *cmd, const struct copy_surface *src, int s
    MALI_PER_ARCH(cmd_dispatch_shader)(cmd, s, NULL, &push, sizeof(push), base, groups);
 }
 
+/* An internal render pass (image clear, blit, fragment-side copy). */
+static void
+transfer_pass(struct mali_cmd_buffer *cmd, const struct mali_render_desc *d)
+{
+   MALI_PER_ARCH(cmd_render_begin)(cmd, d);
+   MALI_PER_ARCH(cmd_render_end)(cmd);
+#if PAN_ARCH < 10
+   mali_jm_cmd_mark_frag_transfer(cmd);
+#endif
+}
+
 /* ---------------------------------------------------------------------- */
 /* Copies that touch AFBC                                                  */
 
@@ -196,7 +221,8 @@ static void copy_from_afbc(struct mali_cmd_buffer *cmd, const struct mali_image 
 /*
  * Blocks [dx, dx + w) x [dy, dy + h) of layers [layer, layer + layers) of an
  * AFBC plane from `src`: a render pass over the rectangle (grown to whole
- * superblocks, the rest reloaded) with the COPY frame shader.
+ * superblocks, the rest reloaded) with the COPY frame shader. On v9 also
+ * the fragment-side copy into any colour plane (copy_on_fragment).
  */
 static void
 copy_to_afbc(struct mali_cmd_buffer *cmd, const struct mali_image *img, unsigned plane,
@@ -226,6 +252,11 @@ copy_to_afbc(struct mali_cmd_buffer *cmd, const struct mali_image *img, unsigned
       };
       copy_from_afbc(cmd, src->img, src->plane, src->level, src->layer, src->x, src->y,
                      &bounce.raw, 0, 0, w, h, layers);
+#if PAN_ARCH < 10
+      mali_jm_cmd_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                          VK_ACCESS_2_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                          VK_ACCESS_2_SHADER_READ_BIT);
+#else
       const VkMemoryBarrier2 mb = {
          .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
          .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -241,6 +272,7 @@ copy_to_afbc(struct mali_cmd_buffer *cmd, const struct mali_image *img, unsigned
       struct mali_cs_deps deps = {0};
       mali_cmd_add_deps(cmd, &dep, &deps);
       mali_cmd_emit_barrier(cmd, &deps);
+#endif
       copy_to_afbc(cmd, img, plane, level, layer, dx, dy, w, h, layers, &bounce);
       return;
    }
@@ -297,8 +329,7 @@ copy_to_afbc(struct mali_cmd_buffer *cmd, const struct mali_image *img, unsigned
       .store = true,
       .always_write = true,
    };
-   MALI_PER_ARCH(cmd_render_begin)(cmd, &d);
-   MALI_PER_ARCH(cmd_render_end)(cmd);
+   transfer_pass(cmd, &d);
    return;
 
 oom:
@@ -362,6 +393,27 @@ copy_touches_crc(const struct mali_image *img, const VkImageSubresourceLayers *s
           !mali_crc_options.skip_copy_invalidate;
 }
 
+/*
+ * On v9: copy this colour region with the fragment-side copy pass rather
+ * than the compute copy, because the compute job would close the open
+ * batch. Uncompressed 2D colour planes only (the pass renders the plane as
+ * a uint format of its texel size); anything else stays compute.
+ */
+static bool
+copy_on_fragment(struct mali_cmd_buffer *cmd, const struct mali_image *src,
+                 const struct mali_image *dst, VkImageAspectFlags aspect,
+                 const struct copy_surface *s)
+{
+#if PAN_ARCH < 10
+   return aspect == VK_IMAGE_ASPECT_COLOR_BIT && src->vk.image_type == VK_IMAGE_TYPE_2D &&
+          dst->vk.image_type == VK_IMAGE_TYPE_2D && s->block_w == 1 && s->block_h == 1 &&
+          util_is_power_of_two_nonzero(s->block_bytes) && s->block_bytes <= 16 &&
+          mali_jm_cmd_transfer_needs_frag(cmd);
+#else
+   return false;
+#endif
+}
+
 VKAPI_ATTR void VKAPI_CALL
 MALI_PER_ARCH(CmdCopyImage2)(VkCommandBuffer commandBuffer, const VkCopyImageInfo2 *info)
 {
@@ -400,7 +452,7 @@ MALI_PER_ARCH(CmdCopyImage2)(VkCommandBuffer commandBuffer, const VkCopyImageInf
          const uint32_t h = DIV_ROUND_UP(r->extent.height, s.block_h);
          const unsigned splane = aspect_plane(src, aspect);
          const unsigned dplane = aspect_plane(dst, daspect);
-         if (mali_image_is_afbc(dst)) {
+         if (mali_image_is_afbc(dst) || copy_on_fragment(cmd, src, dst, aspect, &s)) {
             const struct copy_src cs = {
                .img = mali_image_is_afbc(src) ? src : NULL,
                .plane = splane,
@@ -505,8 +557,7 @@ clear_pass(struct mali_cmd_buffer *cmd, struct mali_render_desc *d, const struct
    d->width = u_minify(img->vk.extent.width, level);
    d->height = u_minify(img->vk.extent.height, level);
    d->area = (VkRect2D){{0, 0}, {d->width, d->height}};
-   MALI_PER_ARCH(cmd_render_begin)(cmd, d);
-   MALI_PER_ARCH(cmd_render_end)(cmd);
+   transfer_pass(cmd, d);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -702,7 +753,6 @@ MALI_PER_ARCH(CmdBlitImage2)(VkCommandBuffer commandBuffer, const VkBlitImageInf
          .store = true,
          .always_write = true,
       };
-      MALI_PER_ARCH(cmd_render_begin)(cmd, &d);
-      MALI_PER_ARCH(cmd_render_end)(cmd);
+      transfer_pass(cmd, &d);
    }
 }

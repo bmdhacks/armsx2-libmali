@@ -42,6 +42,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "util/simple_mtx.h"
 #include "util/u_dynarray.h"
 #include "vk_command_buffer.h"
 #include "vk_queue.h"
@@ -122,7 +123,9 @@ struct mali_jm_batch {
    bool frag_xfer;          /* its fragment segments carry transfer work
                                (MALI_JM_AFTER_EARLIER_XFER) */
    uint32_t passes, draws;
-   uint64_t est_heap_bytes; /* batch closing (G9) */
+   uint64_t est_heap_bytes; /* estimated tiler heap use, for batch closing */
+   uint64_t heap_desc;      /* the Tiler Heap descriptor every pass of the
+                               batch tiles through (0 until one tiles) */
 };
 
 /*
@@ -168,7 +171,7 @@ struct mali_jm_cmd {
    /* Barrier requirements recorded and not yet applied to a job of the
     * slot they order (mali_jm_cmd_buffer.c), and what is left of them at
     * the end of the command buffer (MALI_JM_REQ_*), for the queue. */
-   uint8_t req;
+   uint16_t req;
    uint8_t end_req;
 
    /* Re-submission (g57-backend.md §5.2): command buffers recorded
@@ -279,6 +282,18 @@ void mali_jm_cmd_batch_close(struct mali_cmd_buffer *cmd);
  * full batch first (MALI_JM_BATCH_MAX_JOBS). NULL on failure. */
 struct mali_jm_chain *mali_jm_cmd_vtc(struct mali_cmd_buffer *cmd);
 
+/* The same for a transfer done by compute (buffer and image copies, fills,
+ * updates): it also waits for what barriers whose destination stages are
+ * only transfer stages asked for. Plain vtc jobs (dispatches, draws) are
+ * not in those barriers' second scope, so such a barrier does not close a
+ * batch at the next draw. */
+struct mali_jm_chain *mali_jm_cmd_vtc_transfer(struct mali_cmd_buffer *cmd);
+
+/* Would a transfer job on the vtc chain close the open batch now (a
+ * recorded barrier makes it wait for this batch's fragment work)? An
+ * image copy then goes to the fragment side instead (mali_cmd_image.c). */
+bool mali_jm_cmd_transfer_needs_frag(struct mali_cmd_buffer *cmd);
+
 /* The open batch's current fragment segment, started if the batch has
  * none; with new_segment, always a new one (a new fragment atom). Applies
  * the barriers recorded for fragment work. NULL on failure. The vtc
@@ -333,6 +348,57 @@ void mali_jm_cmd_barrier(struct mali_cmd_buffer *cmd, VkPipelineStageFlags2 src_
 void mali_jm_cmd_prepare_submit(struct mali_cmd_buffer *cmd);
 
 /* ---------------------------------------------------------------------- */
+/* Render passes (mali_jm_cmd_render.c) and the tiler heap (mali_jm_heap.c) */
+
+/*
+ * What a draw (mali_jm_cmd_draw.c) uses of the pass, after
+ * MALI_PER_ARCH(cmd_render_tiler) has returned true for it:
+ *  - the chain its jobs go into: mali_jm_cmd_pass_vtc (the open batch's
+ *    vtc chain; the batch cannot close inside a pass, and the barriers
+ *    owed to the pass's vtc work were applied by cmd_render_tiler, so a
+ *    draw takes the chain as it is);
+ *  - one Tiler Context per layer: mali_jm_pass_tiler(r, layer), layers
+ *    0 .. r->td_count - 1 (MALI_LAYERS_PER_TILER_CTX is 1 on v9);
+ *  - the pass's Local Storage descriptor: r->tsd (filled at the end of the
+ *    pass from r->tls_size, which the draw raises to its shaders' need);
+ *  - the batch's heap estimate: mali_jm_cmd_heap_use(cmd, bytes) per draw
+ *    (vertices x instances x (packet stride + 16) plus the polygon list
+ *    estimate); the next pass's begin closes the
+ *    batch past half a heap slot.
+ */
+static inline struct mali_jm_chain *
+mali_jm_cmd_pass_vtc(struct mali_cmd_buffer *cmd)
+{
+   assert(cmd->jm.open && cmd->gfx.render.tiler);
+   return &cmd->jm.cur.vtc;
+}
+
+static inline uint64_t
+mali_jm_pass_tiler(const struct mali_render_state *r, uint32_t layer)
+{
+   assert(layer < r->td_count);
+   return r->tiler + (uint64_t)layer * pan_size(TILER_CONTEXT);
+}
+
+static inline void
+mali_jm_cmd_heap_use(struct mali_cmd_buffer *cmd, uint64_t bytes)
+{
+   cmd->jm.cur.est_heap_bytes += bytes;
+}
+
+struct mali_jm_device;
+
+/* The ring's lock; slots are allocated on first use. */
+void mali_jm_heap_init(struct mali_jm_device *jd);
+/* Frees every slot. The GPU must be idle. */
+void mali_jm_heap_finish(struct mali_jm_device *jd);
+
+/* Give the open batch b a heap slot (the next in the ring, allocated if it
+ * is new) and its Tiler Heap descriptor in command memory (b->heap_slot,
+ * b->heap_desc). False on failure, with the command buffer's error set. */
+bool mali_jm_heap_take(struct mali_cmd_buffer *cmd, struct mali_jm_batch *b);
+
+/* ---------------------------------------------------------------------- */
 /* The device and queue                                                    */
 
 /* A reference to a submitted atom that stays meaningful after its number
@@ -379,10 +445,33 @@ struct mali_jm_atom_info {
    mali_jm_ref cov[MALI_JM_SLOT_COUNT];
 };
 
-/* Tiler heap slots (g57-backend.md §8): the ring itself is G9's; the
- * queue keeps, per slot, the last fragment atom that read it, and the vtc
- * atom of the next batch using the slot waits for it. */
+/*
+ * The tiler heap ring (mali_jm_heap.c). On v9 the tiler
+ * allocates polygon lists and vertex packets (varyings) from the heap, and
+ * the kernel does not order atoms that share memory, so a heap region is
+ * reused only after the fragment work that reads it. The ring has
+ * MALI_JM_HEAP_SLOTS regions; a batch that tiles takes the next one when
+ * its first pass starts tiling, and every pass and layer of the batch tiles
+ * through one Tiler Heap descriptor in its command memory. The queue keeps,
+ * per slot, the last fragment atom that read it, and the vtc atom of the
+ * next batch using the slot waits for it.
+ *
+ * Each slot is a separate growable allocation (a GROW_ON_GPF fault commits
+ * every page up to the faulting one, so windows inside one region would
+ * commit the gaps between them): GPU read/write, no CPU access,
+ * TILER_ALIGN_TOP, 2 MiB committed, 2 MiB growth steps, 256 MiB of VA (the
+ * T820 blob's big JIT heaps are 360 MiB).
+ */
 #define MALI_JM_HEAP_SLOTS_MAX 32
+#define MALI_JM_HEAP_SLOTS 4
+#define MALI_JM_HEAP_CHUNK (2ull << 20)
+#define MALI_JM_HEAP_SLOT_SIZE (256ull << 20)
+
+struct mali_jm_heap {
+   simple_mtx_t lock;
+   uint32_t next;           /* the slot the next batch takes */
+   struct mali_kbase_bo bo[MALI_JM_HEAP_SLOTS];
+};
 
 #define MALI_JM_EVENTS_PER_READ 32
 
@@ -422,6 +511,9 @@ struct mali_jm_device {
 
    /* The device's one queue (MALI_QUEUE_COUNT is 1). */
    struct mali_jm_queue *queue;
+
+   /* Tiler heap regions; their own lock (recording threads take slots). */
+   struct mali_jm_heap heap;
 
    /* Atoms of the JOB_SUBMIT being built (only while building). */
    struct mali_jm_build *build;

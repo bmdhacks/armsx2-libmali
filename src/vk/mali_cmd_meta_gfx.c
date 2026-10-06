@@ -476,6 +476,11 @@ MALI_PER_ARCH(meta_fs_dcd)(struct mali_cmd_buffer *cmd, const struct mali_shader
       cfg.flags_2.read_mask = 0;
       cfg.flags_2.no_shader_depth_read = true;
       cfg.flags_2.no_shader_stencil_read = true;
+#else
+      /* A full-screen job's draw takes its vertex packet as a Malloc
+       * Vertex draw does (Mesa's v9 jm_emit_tiler_draw); frame shaders
+       * have none. */
+      cfg.vertex_array.packet = !frame_shader;
 #endif
       cfg.blend = blend;
       cfg.blend_count = blend_count;

@@ -993,6 +993,7 @@ MALI_PER_ARCH(device_init)(struct mali_device *dev)
    jd->stream_fd = -1;
    mali_kbase_jm_atom_ids_init(&jd->ids);
    jd->free_ids = mali_kbase_jm_atom_ids_free_count(&jd->ids);
+   mali_jm_heap_init(jd);
 
    dev->jm = jd;
    dev->fe = jd;
@@ -1013,6 +1014,7 @@ MALI_PER_ARCH(device_finish)(struct mali_device *dev)
    mali_jm_drain_locked(dev);
    pthread_mutex_unlock(&dev->lock);
    mali_jm_sync_file_finish(jd);
+   mali_jm_heap_finish(jd);
 
    dev->vk.check_status = NULL;
    dev->jm = NULL;

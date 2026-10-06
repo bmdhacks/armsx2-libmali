@@ -39,7 +39,12 @@
  *    source stages are only transfer stages asks only for fragment atoms
  *    that carried transfer work (fragment-side copies, blits, clears), so
  *    an upload barrier does not hold the next frame's tiling behind the
- *    previous frame's fragment work;
+ *    previous frame's fragment work. A barrier whose vtc-slot destination
+ *    stages are only transfer stages asks this only of the next transfer
+ *    done by compute (mali_jm_cmd_vtc_transfer), not of draws and
+ *    dispatches, which are outside its second scope: a "colour output ->
+ *    transfer" barrier for a fragment-side image copy then does not close
+ *    the batch at the next pass's tiling;
  *  - fragment after vtc: free inside a batch (its fragment atoms depend on
  *    its vtc atom); a batch without a vtc chain waits for the newest vtc
  *    atom;
@@ -324,6 +329,15 @@ mali_jm_cmd_write_value(struct mali_cmd_buffer *cmd, struct mali_jm_chain *c,
 #define REQ_FRAG_AFTER_VTC      (1u << 4)
 #define REQ_FRAG_AFTER_FRAG     (1u << 5)
 #define REQ_FRAG_FLUSH          (1u << 6)
+/* The VTC_AFTER_FRAG requirements of barriers whose vtc-slot destination
+ * stages are only transfer stages: only the next transfer job on the vtc
+ * chain (mali_jm_cmd_vtc_transfer) waits for them. */
+#define REQ_XVTC_AFTER_FRAG      (1u << 7)
+#define REQ_XVTC_AFTER_FRAG_XFER (1u << 8)
+
+#define REQ_VTC_ALL                                                            \
+   (REQ_VTC_AFTER_VTC | REQ_VTC_AFTER_FRAG | REQ_VTC_AFTER_FRAG_XFER | REQ_VTC_FLUSH)
+#define REQ_XVTC_ALL (REQ_XVTC_AFTER_FRAG | REQ_XVTC_AFTER_FRAG_XFER)
 
 static inline bool
 batch_has_frag_jobs(const struct mali_cmd_buffer *cmd)
@@ -369,11 +383,37 @@ mali_jm_cmd_batch_close(struct mali_cmd_buffer *cmd)
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
 }
 
-struct mali_jm_chain *
-mali_jm_cmd_vtc(struct mali_cmd_buffer *cmd)
+/* The requirements on the next vtc job: a transfer job also takes the
+ * transfer-only ones (folded into the plain bits). */
+static inline uint16_t
+vtc_req(uint16_t req, bool xfer)
+{
+   uint16_t want = req & REQ_VTC_ALL;
+   if (xfer) {
+      if (req & REQ_XVTC_AFTER_FRAG)
+         want |= REQ_VTC_AFTER_FRAG;
+      if (req & REQ_XVTC_AFTER_FRAG_XFER)
+         want |= REQ_VTC_AFTER_FRAG_XFER;
+   }
+   return want;
+}
+
+/* Does meeting req on the vtc chain close the open batch? */
+static inline bool
+vtc_req_closes(const struct mali_cmd_buffer *cmd, uint16_t req)
+{
+   if (req & REQ_VTC_AFTER_FRAG)
+      return batch_has_frag_jobs(cmd);
+   if (req & REQ_VTC_AFTER_FRAG_XFER)
+      return cmd->jm.cur.frag_xfer;
+   return false;
+}
+
+static struct mali_jm_chain *
+vtc_chain(struct mali_cmd_buffer *cmd, bool xfer)
 {
    struct mali_jm_batch *b = mali_jm_cmd_batch(cmd);
-   const uint8_t req = cmd->jm.req;
+   const uint16_t req = vtc_req(cmd->jm.req, xfer);
 
    /* Outside a render pass, a full batch closes before the next job. */
    if (unlikely(b->vtc.jobs >= MALI_JM_BATCH_MAX_JOBS) && !cmd->gfx.render.active) {
@@ -381,14 +421,11 @@ mali_jm_cmd_vtc(struct mali_cmd_buffer *cmd)
       b = mali_jm_cmd_batch(cmd);
    }
 
-   if (unlikely(req & (REQ_VTC_AFTER_VTC | REQ_VTC_AFTER_FRAG | REQ_VTC_AFTER_FRAG_XFER |
-                       REQ_VTC_FLUSH))) {
+   if (unlikely(req)) {
       if (req & (REQ_VTC_AFTER_FRAG | REQ_VTC_AFTER_FRAG_XFER)) {
          /* Fragment work of this batch runs after its vtc chain: if the
           * barrier waits for some, the batch ends here. */
-         const bool close = (req & REQ_VTC_AFTER_FRAG) ? batch_has_frag_jobs(cmd)
-                                                       : b->frag_xfer;
-         if (close) {
+         if (vtc_req_closes(cmd, req)) {
             mali_jm_cmd_batch_close(cmd);
             b = mali_jm_cmd_batch(cmd);
             b->vtc_after_frag = MALI_JM_AFTER_EARLIER;
@@ -403,17 +440,41 @@ mali_jm_cmd_vtc(struct mali_cmd_buffer *cmd)
       if (b->vtc.jobs && (req & REQ_VTC_AFTER_VTC))
          b->vtc.pending |= MALI_JM_PENDING_BARRIER |
                            ((req & REQ_VTC_FLUSH) ? MALI_JM_PENDING_FLUSH : 0);
-      cmd->jm.req &= ~(REQ_VTC_AFTER_VTC | REQ_VTC_AFTER_FRAG | REQ_VTC_AFTER_FRAG_XFER |
-                       REQ_VTC_FLUSH);
+      /* The transfer-only requirements are met with the plain ones: the
+       * batch's vtc atom now waits for every fragment atom they name. */
+      uint16_t met = REQ_VTC_ALL;
+      if (xfer || (req & REQ_VTC_AFTER_FRAG))
+         met |= REQ_XVTC_ALL;
+      else if (req & REQ_VTC_AFTER_FRAG_XFER)
+         met |= REQ_XVTC_AFTER_FRAG_XFER;
+      cmd->jm.req &= ~met;
    }
    return &b->vtc;
+}
+
+struct mali_jm_chain *
+mali_jm_cmd_vtc(struct mali_cmd_buffer *cmd)
+{
+   return vtc_chain(cmd, false);
+}
+
+struct mali_jm_chain *
+mali_jm_cmd_vtc_transfer(struct mali_cmd_buffer *cmd)
+{
+   return vtc_chain(cmd, true);
+}
+
+bool
+mali_jm_cmd_transfer_needs_frag(struct mali_cmd_buffer *cmd)
+{
+   return cmd->jm.open && vtc_req_closes(cmd, vtc_req(cmd->jm.req, true));
 }
 
 struct mali_jm_chain *
 mali_jm_cmd_frag(struct mali_cmd_buffer *cmd, bool new_segment)
 {
    struct mali_jm_batch *b = mali_jm_cmd_batch(cmd);
-   const uint8_t req = cmd->jm.req;
+   const uint16_t req = cmd->jm.req;
 
    if (new_segment || !b->frag_count) {
       struct mali_jm_frag_seg *seg =
@@ -482,6 +543,9 @@ mali_jm_cmd_add_batch(struct mali_cmd_buffer *cmd, const struct mali_jm_batch *b
     VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | \
     VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT)
 
+/* The vtc-slot stages that are transfers. */
+#define VTC_XFER_STAGES (VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT)
+
 /* Stages of rendering on the fragment slot. */
 #define FRAG_RENDER_STAGES                                                     \
    (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |                             \
@@ -519,18 +583,22 @@ mali_jm_cmd_barrier(struct mali_cmd_buffer *cmd, VkPipelineStageFlags2 src_stage
    const bool src_vtc = src_stages & VTC_STAGES;
    const bool src_frag = src_stages & FRAG_RENDER_STAGES;
    const bool src_frag_xfer = src_stages & FRAG_XFER_STAGES;
+   /* vtc-slot destination stages, and whether any of them is not a
+    * transfer (then every vtc job is in the second scope, else only
+    * transfer jobs are). */
    const bool dst_vtc = dst_stages & VTC_STAGES;
+   const bool dst_vtc_all = dst_stages & VTC_STAGES & ~VTC_XFER_STAGES;
    const bool dst_frag = dst_stages & (FRAG_RENDER_STAGES | FRAG_XFER_STAGES);
    const bool flush = dst_access & RO_L1_ACCESS;
 
-   uint8_t req = 0;
+   uint16_t req = 0;
    if (dst_vtc) {
       if (src_vtc)
          req |= REQ_VTC_AFTER_VTC | (flush ? REQ_VTC_FLUSH : 0);
       if (src_frag)
-         req |= REQ_VTC_AFTER_FRAG;
+         req |= dst_vtc_all ? REQ_VTC_AFTER_FRAG : REQ_XVTC_AFTER_FRAG;
       else if (src_frag_xfer)
-         req |= REQ_VTC_AFTER_FRAG_XFER;
+         req |= dst_vtc_all ? REQ_VTC_AFTER_FRAG_XFER : REQ_XVTC_AFTER_FRAG_XFER;
    }
    if (dst_frag) {
       if (src_vtc)
@@ -613,55 +681,6 @@ MALI_PER_ARCH(CmdPipelineBarrier2)(VkCommandBuffer commandBuffer,
 }
 
 /* ---------------------------------------------------------------------- */
-/* Render-pass hooks the render-pass and draw units fill in                */
-
-static void
-not_recorded(struct mali_cmd_buffer *cmd, const char *what)
-{
-   mesa_loge("libmali: %s is not implemented on the job manager (v9) yet", what);
-   vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
-}
-
-void
-MALI_PER_ARCH(cmd_render_begin)(struct mali_cmd_buffer *cmd, const struct mali_render_desc *desc)
-{
-   not_recorded(cmd, "a render pass");
-}
-
-void
-MALI_PER_ARCH(cmd_render_end)(struct mali_cmd_buffer *cmd)
-{
-}
-
-bool
-MALI_PER_ARCH(cmd_render_tiler)(struct mali_cmd_buffer *cmd)
-{
-   not_recorded(cmd, "tiling");
-   return false;
-}
-
-void
-MALI_PER_ARCH(cmd_fb_barrier)(struct mali_cmd_buffer *cmd)
-{
-   not_recorded(cmd, "an in-pass by-region barrier");
-}
-
-/* CRCs (transaction elimination) are off on v9 until the device shows
- * they pay (g57-backend.md §11); with no CRC state there is nothing to
- * invalidate. */
-void
-MALI_PER_ARCH(cmd_crc_invalidate)(struct mali_cmd_buffer *cmd, const struct mali_image *image)
-{
-}
-
-void
-MALI_PER_ARCH(cmd_run_fullscreen)(struct mali_cmd_buffer *cmd, uint64_t dcd, const VkRect2D *rect,
-                                  uint32_t base_layer, uint32_t layer_count)
-{
-   not_recorded(cmd, "a full-screen draw");
-}
-
-/* ---------------------------------------------------------------------- */
 /* Begin and end                                                           */
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -689,11 +708,13 @@ MALI_PER_ARCH(EndCommandBuffer)(VkCommandBuffer commandBuffer)
    /* What later command buffers' atoms still have to wait for. Waits
     * within one slot are kept by the slot order and the cache maintenance
     * between atoms. */
-   const uint8_t req = cmd->jm.req;
+   const uint16_t req = cmd->jm.req;
    cmd->jm.end_req = 0;
-   if (req & REQ_VTC_AFTER_FRAG)
+   /* Later command buffers' vtc atoms are not told apart by kind: the
+    * transfer-only requirements apply to all of them. */
+   if (req & (REQ_VTC_AFTER_FRAG | REQ_XVTC_AFTER_FRAG))
       cmd->jm.end_req |= MALI_JM_REQ_VTC_AFTER_FRAG;
-   else if (req & REQ_VTC_AFTER_FRAG_XFER)
+   else if (req & (REQ_VTC_AFTER_FRAG_XFER | REQ_XVTC_AFTER_FRAG_XFER))
       cmd->jm.end_req |= MALI_JM_REQ_VTC_AFTER_FRAG_XFER;
    if (req & REQ_FRAG_AFTER_VTC)
       cmd->jm.end_req |= MALI_JM_REQ_FRAG_AFTER_VTC;
