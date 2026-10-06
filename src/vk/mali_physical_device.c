@@ -43,6 +43,19 @@
 #define MALI_DRIVER_INFO \
    "v1.r44p1-libmali." MALI_VERSION_STRING ".s" MALI_SHADER_CACHE_ID_SHORT
 
+/*
+ * Q1 (docs/design/g57-backend.md §18, docs/decomp/g57/object-layer.md
+ * "Facts settled"): what identity the G57 build (arch 9) reports to
+ * ARMSX2. The working default is option D: report the same scheme the
+ * G615 build uses above, not the T820 blob's own values (driverVersion
+ * 40.0.0, driverInfo "v1.r40p0-01eac0.<hash>"). Both options report
+ * driverID 9 (VK_DRIVER_ID_ARM_PROPRIETARY) either way. If the user's
+ * final choice is option A instead, these two definitions are the only
+ * change needed.
+ */
+#define MALI_V9_DRIVER_VERSION MALI_DRIVER_VERSION
+#define MALI_V9_DRIVER_INFO MALI_DRIVER_INFO
+
 /* Arch the driver was built for (meson.build pan_arch). */
 #ifndef MALI_PAN_ARCH
 #error "MALI_PAN_ARCH must be defined"
@@ -67,12 +80,19 @@ bool
 mali_device_name(const struct mali_kbase_gpu_props *p, char *buf, size_t size)
 {
    /* Arch 9: product 0x9001 is the G57, the only one the T820 blob
-    * accepts (design doc §3). The exact name the blob reports is still to
-    * be read (§13); physical_device_create skips arch 9 for now anyway. */
+    * accepts (design doc §3); 0x9003 is Mesa's other G57 product ID (the
+    * T820 blob has no name for it and would call it "UNKNOWN", but our
+    * driver names the GPU from its own table, not the blob's). The T820
+    * blob reports the bare name with no "MC<n>" suffix -- it has no
+    * "Mali-G57 MC%d" format string, unlike the G615's r44p1 build
+    * (docs/decomp/g57/object-layer.md, "Facts settled"; CORRECTION
+    * 2026-10-06). Q1's working default (docs/design/g57-backend.md §18)
+    * reports that same bare name. */
    if (p->arch_major == 9) {
-      if ((p->product_id & 0xf00f) != 0x9001)
+      const uint32_t product = p->product_id & 0xf00f;
+      if (product != 0x9001 && product != 0x9003)
          return false;
-      snprintf(buf, size, "Mali-G57 MC%u", p->core_count);
+      snprintf(buf, size, "Mali-G57");
       return true;
    }
    if (p->arch_major != MALI_PAN_ARCH)
@@ -195,10 +215,30 @@ static const struct vk_device_extension_table mali_device_extensions = {
     * blob's frame time. Input attachments are tile reads already; with
     * the rasterization-order flags the pipeline turns off forward pixel
     * kill and early depth/stencil updates (mali_pipeline_state.c), as
-    * panvk does on v10+. */
+    * panvk does on v10+. Not on v9 yet -- see
+    * device_extensions_for_arch() below. */
    .EXT_rasterization_order_attachment_access = true,
    .ARM_rasterization_order_attachment_access = true,
 };
+
+/*
+ * v9 (G57) drops rasterization-order attachment access: the job-manager
+ * render-pass encoder has no DCD Flags 2 there (NEEDS §8,
+ * docs/design/g57-backend.md §6), and it is not implemented yet regardless.
+ * It stays off even once that lands, until ARMSX2's G57 ROAA rule has an
+ * exemption for our driver and a device measurement supports lifting it
+ * (§13, §18 Q1); we do not touch the ARMSX2 side here.
+ */
+static struct vk_device_extension_table
+device_extensions_for_arch(uint32_t arch)
+{
+   struct vk_device_extension_table ext = mali_device_extensions;
+   if (arch == 9) {
+      ext.EXT_rasterization_order_attachment_access = false;
+      ext.ARM_rasterization_order_attachment_access = false;
+   }
+   return ext;
+}
 
 /*
  * The features we intend to implement for ARMSX2 on this GPU, not the
@@ -206,8 +246,12 @@ static const struct vk_device_extension_table mali_device_extensions = {
  * where we can back them.
  */
 static void
-get_features(struct vk_features *f)
+get_features(struct vk_features *f, uint32_t arch)
 {
+   /* v9 (G57): rasterization-order attachment access is not advertised
+    * yet (device_extensions_for_arch() above; design doc §6, §13). */
+   const bool roaa = arch != 9;
+
    *f = (struct vk_features) {
       /* Vulkan 1.0 */
       .robustBufferAccess = true,
@@ -251,9 +295,9 @@ get_features(struct vk_features *f)
       .multiview = true,
 
       /* VK_EXT_rasterization_order_attachment_access */
-      .rasterizationOrderColorAttachmentAccess = true,
-      .rasterizationOrderDepthAttachmentAccess = true,
-      .rasterizationOrderStencilAttachmentAccess = true,
+      .rasterizationOrderColorAttachmentAccess = roaa,
+      .rasterizationOrderDepthAttachmentAccess = roaa,
+      .rasterizationOrderStencilAttachmentAccess = roaa,
    };
 }
 
@@ -273,10 +317,18 @@ sample_counts(unsigned bytes_per_pixel, unsigned tilebuf_bytes)
    return s;
 }
 
-/* 32 KiB when the low byte of core_features is 3 or 4, else 16 KiB. */
+/*
+ * v11 (G615): 32 KiB when the low byte of core_features is 3 or 4, else
+ * 16 KiB. v9 (G57): a fixed 16 KiB -- both writers of the T820 blob's
+ * tile-buffer-budget global store the same constant regardless of
+ * core_features (docs/decomp/g57/object-layer.md, "Facts settled"), and
+ * Mesa's model table gives the G57 the same fixed 16 KiB.
+ */
 static unsigned
 tilebuf_budget(const struct mali_kbase_gpu_props *p)
 {
+   if (p->arch_major == 9)
+      return 16384;
    unsigned variant = p->core_features & 0xff;
    return (variant == 3 || variant == 4) ? 32768 : 16384;
 }
@@ -337,9 +389,15 @@ get_properties(const struct mali_physical_device *pdev, const char *name,
    const uint64_t max_alloc = MIN2(heap_size(p), 8ull << 30);
    const float ts_period = pdev->timestamp_hz ? 1e9f / (float)pdev->timestamp_hz : 1.0f;
 
+   /* Q1 (above): the G57 build's own identity scheme. */
+   const uint32_t driver_version =
+      p->arch_major == 9 ? MALI_V9_DRIVER_VERSION : MALI_DRIVER_VERSION;
+   const char *const driver_info =
+      p->arch_major == 9 ? MALI_V9_DRIVER_INFO : MALI_DRIVER_INFO;
+
    *props = (struct vk_properties) {
       .apiVersion = MALI_API_VERSION,
-      .driverVersion = MALI_DRIVER_VERSION,
+      .driverVersion = driver_version,
       .vendorID = MALI_VENDOR_ID,
       .deviceID = (uint32_t)p->gpu_id,
       .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
@@ -474,14 +532,14 @@ get_properties(const struct mali_physical_device *pdev, const char *name,
    snprintf(props->deviceName, sizeof(props->deviceName), "%s", name);
    /* The blob reports the device name as driverName too. */
    snprintf(props->driverName, sizeof(props->driverName), "%s", name);
-   snprintf(props->driverInfo, sizeof(props->driverInfo), "%s", MALI_DRIVER_INFO);
+   snprintf(props->driverInfo, sizeof(props->driverInfo), "%s", driver_info);
 
    /* deviceUUID: gpu_id little-endian, then 1. */
    uint32_t id = (uint32_t)p->gpu_id;
    memcpy(props->deviceUUID, &id, sizeof(id));
    props->deviceUUID[4] = 1;
    /* driverUUID: a hash of driverInfo, so never the blob's. */
-   hash_uuid(props->driverUUID, MALI_DRIVER_INFO, sizeof(MALI_DRIVER_INFO));
+   hash_uuid(props->driverUUID, driver_info, strlen(driver_info) + 1);
    pipeline_cache_uuid(props->pipelineCacheUUID, p->gpu_id);
 }
 
@@ -597,19 +655,23 @@ physical_device_create(struct mali_instance *instance, const char *path,
    /* driverInfo carries the shader cache ID, not the commit; say which build
     * this is here. No "libmali:" prefix: the corpus tools count those lines
     * as warnings. */
-   mesa_logi("libmali build %s, driverInfo %s", MALI_GIT_SHA, MALI_DRIVER_INFO);
+   mesa_logi("libmali build %s, driverInfo %s", MALI_GIT_SHA,
+            pdev->arch == 9 ? MALI_V9_DRIVER_INFO : MALI_DRIVER_INFO);
 
    struct vk_features features;
    struct vk_properties props;
-   get_features(&features);
+   get_features(&features, pdev->arch);
    get_properties(pdev, name, &props);
+
+   const struct vk_device_extension_table extensions =
+      device_extensions_for_arch(pdev->arch);
 
    struct vk_physical_device_dispatch_table dispatch;
    vk_physical_device_dispatch_table_from_entrypoints(
       &dispatch, &mali_physical_device_entrypoints, true);
 
    VkResult result = vk_physical_device_init(&pdev->vk, &instance->vk,
-                                             &mali_device_extensions, &features,
+                                             &extensions, &features,
                                              &props, &dispatch);
    if (result != VK_SUCCESS) {
       vk_free(&instance->vk.alloc, pdev);
