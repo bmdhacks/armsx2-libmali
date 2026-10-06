@@ -267,7 +267,9 @@ dual_src_blend_for_arch(uint32_t arch)
    case 9:
       return true;
    case 11:
-      return true;
+      /* Off for now: a rendering error in the dual-source path on this
+       * arch still needs tracking down. */
+      return false;
    default:
       return false;
    }
