@@ -237,10 +237,10 @@ MALI_PER_ARCH(blend_shader_key_init)(struct mali_blend_shader_key *key,
 }
 
 void
-MALI_PER_ARCH(blend_shaders_prepare)(struct mali_device *dev,
-                                     const struct mali_graphics_pipeline *p)
+MALI_PER_ARCH(blend_shaders_prepare)(struct mali_device *dev, struct mali_graphics_pipeline *p)
 {
    const struct mali_gfx_baked *bk = &p->baked;
+   memset(p->blend_shader, 0, sizeof(p->blend_shader));
    if (!p->fs || !bk->needs_blend_shader || bk->uses_dynamic_state)
       return;
 
@@ -248,12 +248,15 @@ MALI_PER_ARCH(blend_shaders_prepare)(struct mali_device *dev,
    for (unsigned i = 0; i < bk->rt_count && i < MALI_MAX_RTS; i++) {
       if (bk->blend[i].mode != MALI_BLEND_RT_SHADER)
          continue;
+      const enum pipe_format format = vk_format_to_pipe_format(bk->blend[i].format);
       struct mali_blend_shader_key key;
-      MALI_PER_ARCH(blend_shader_key_init)(&key, bk, i,
-                                           vk_format_to_pipe_format(bk->blend[i].format),
-                                           samples, &p->fs->info);
+      MALI_PER_ARCH(blend_shader_key_init)(&key, bk, i, format, samples, &p->fs->info);
       uint64_t addr;
-      MALI_PER_ARCH(blend_shader_get)(dev, &key, &addr);
+      if (MALI_PER_ARCH(blend_shader_get)(dev, &key, &addr) == VK_SUCCESS) {
+         p->blend_shader[i].addr = addr;
+         p->blend_shader[i].format = format;
+         p->blend_shader[i].samples = samples;
+      }
    }
 }
 

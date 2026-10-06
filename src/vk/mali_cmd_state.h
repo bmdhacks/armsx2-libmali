@@ -643,19 +643,26 @@ mali_gfx_blend_shader_for(struct mali_cmd_buffer *cmd, const struct mali_graphic
                           unsigned i)
 {
    const struct mali_render_state *r = &cmd->gfx.render;
-   struct mali_blend_shader_key key;
-   MALI_PER_ARCH(blend_shader_key_init)(&key, &p->baked, i, r->desc.rt[i].format,
-                                        r->desc.rt[i].image->vk.samples, &p->fs->info);
+   const enum pipe_format format = r->desc.rt[i].format;
+   const unsigned samples = r->desc.rt[i].image->vk.samples;
 
    uint64_t addr = 0;
-   if (MALI_PER_ARCH(blend_shader_get)(cmd->dev, &key, &addr) != VK_SUCCESS) {
-      static bool warned;
-      if (!warned) {
-         warned = true;
-         mesa_logw("malisx2: a blend shader failed to compile; the colour is stored "
-                   "unblended");
+   if (p->blend_shader[i].addr && p->blend_shader[i].format == format &&
+       p->blend_shader[i].samples == samples) {
+      /* Compiled with the pipeline for this target's format and samples. */
+      addr = p->blend_shader[i].addr;
+   } else {
+      struct mali_blend_shader_key key;
+      MALI_PER_ARCH(blend_shader_key_init)(&key, &p->baked, i, format, samples, &p->fs->info);
+      if (MALI_PER_ARCH(blend_shader_get)(cmd->dev, &key, &addr) != VK_SUCCESS) {
+         static bool warned;
+         if (!warned) {
+            warned = true;
+            mesa_logw("malisx2: a blend shader failed to compile; the colour is stored "
+                      "unblended");
+         }
+         return 0;
       }
-      return 0;
    }
    /* The descriptor holds 32 bits of the address; the fragment shader's
     * jump supplies the rest. */
