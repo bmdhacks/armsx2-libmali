@@ -6,9 +6,9 @@
 /*
  * The kbase kernel interface, job-manager (JM) flavour: Arm's older
  * frontend, used by the Mali-G57 (arch v9) instead of the G615's CSF. UK
- * version 11.36 (DDK r40p0, the Unisoc T820's kernel;
- * docs/g57/kbase-r40p0-vs-r44p1.md found no job-manager UAPI difference
- * from the r44p1 Exynos tree this driver already targets on CSF).
+ * version 11.36 (DDK r40p0, the Unisoc T820's kernel; its job-manager UAPI
+ * has no difference from the r44p1 Exynos tree this driver already
+ * targets on CSF).
  *
  * Licensing and evidence: as uapi.h. Our own MIT text written from the
  * r40p0 kbase UAPI headers (GPL-2.0 WITH Linux-syscall-note), never
@@ -18,13 +18,13 @@
  * MEM_JIT_INIT, MEM_IMPORT, MEM_FREE, MEM_SYNC, MEM_COMMIT,
  * MEM_FLAGS_CHANGE, STICKY_RESOURCE_MAP/UNMAP, GET_CPU_GPU_TIMEINFO,
  * FENCE_VALIDATE, the base_mem_alloc_flags bits) is the same struct and
- * number on both kernels (kbase-r40p0-vs-r44p1.md §5, §7) and is reused
- * from uapi.h rather than redefined here.
+ * number on both kernels and is reused from uapi.h rather than redefined
+ * here.
  *
  * tests/test_kbase_uapi_abi_jm.c compiles this header next to the r40p0
- * kernel's own headers (references/kbase-ums9620/mali/, built with
- * -DMALI_USE_CSF=0) and compares sizes, offsets, ioctl numbers and flag
- * values, the same way test_kbase_uapi_abi.c checks uapi.h against r44p1.
+ * kernel's own headers, built with -DMALI_USE_CSF=0, and compares sizes,
+ * offsets, ioctl numbers and flag values, the same way
+ * test_kbase_uapi_abi.c checks uapi.h against r44p1.
  */
 
 #ifndef MALI_KBASE_UAPI_JM_H
@@ -36,16 +36,16 @@
 
 #include "uapi.h"
 
-/* The JM UK version we speak (kbase-r40p0-vs-r44p1.md §1: the T820 kernel
- * is 11.36; r44p1 is 11.39, but the handshake answers min(ours, its own)
- * for a matching major, so proposing 11.36 and accepting only 11.36 back
- * is the same "kernel at this minor or newer" pin as the CSF side's 1.20,
- * and is what the kernel we have in hand actually offers). */
+/* The JM UK version we speak: the T820 kernel is 11.36; r44p1 is 11.39,
+ * but the handshake answers min(ours, its own) for a matching major, so
+ * proposing 11.36 and accepting only 11.36 back is the same "kernel at
+ * this minor or newer" pin as the CSF side's 1.20, and is what the kernel
+ * we have in hand actually offers. */
 #define KB_JM_UK_VERSION_MAJOR 11
 #define KB_JM_UK_VERSION_MINOR 36
 
-/* MEM_JIT_INIT's trim level for a job-manager context (g57-backend.md
- * §3); the CSF side's KB_JIT_TRIM_LEVEL (5) is unrelated. */
+/* MEM_JIT_INIT's trim level for a job-manager context; the CSF side's
+ * KB_JIT_TRIM_LEVEL (5) is unrelated. */
 #define KB_JM_JIT_TRIM_LEVEL 0
 
 /* ---------------------------------------------------------------------- */
@@ -54,7 +54,7 @@
 /* Bits 8 and 19 are BASE_MEM_FIXED and BASE_MEM_CSF_EVENT on the CSF side
  * (uapi.h: KB_MEM_FIXED, KB_MEM_CSF_EVENT); on a job-manager kernel they
  * are plain reserved bits (BASE_MEM_RESERVED_BIT_8/_19) that a client must
- * never set (kbase-r40p0-vs-r44p1.md §5, jm-driver-needs.md §2.7). */
+ * never set. */
 #define KB_MEM_JM_RESERVED (KB_MEM_FIXED | KB_MEM_CSF_EVENT)
 
 /* BASEP_MEM_FLAGS_KERNEL_ONLY of the job-manager kernel: bits 5
@@ -97,10 +97,10 @@ struct kb_jm_soft_event_update {
    _IOW(KB_IOCTL_TYPE, 28, struct kb_jm_soft_event_update)
 
 /* STREAM_CREATE: the sync-file timeline a FENCE_TRIGGER soft atom's
- * base_fence.stream_fd names (g57-backend.md §9.4). Ioctl 24 is a shared
- * number (kbase-r40p0-vs-r44p1.md §5); the CSF side never issues it
- * (its sync-file export goes through the kcpu queue instead), so it is
- * defined here rather than in uapi.h. */
+ * base_fence.stream_fd names. Ioctl 24 is a shared number on both
+ * kernels; the CSF side never issues it (its sync-file export goes
+ * through the kcpu queue instead), so it is defined here rather than in
+ * uapi.h. */
 struct kb_jm_stream_create {
    char name[32]; /* NUL-terminated; the rest must be NUL too */
 };
@@ -118,10 +118,10 @@ struct kb_jm_dep {
 #define KB_JM_DEP_ORDER   (1u << 1)
 
 /*
- * struct base_jd_atom ("v3": base_jd_atom_v2 plus a leading seq_nr), the
- * 64-byte layout this driver always submits. jm-driver-needs.md §2.2 and
- * kbase-r40p0-vs-r44p1.md §3 confirm every offset below against both the
- * r40p0 and r44p1 trees.
+ * struct base_jd_atom ("v3": base_jd_atom_v2 plus a leading seq_nr),
+ * the 64-byte layout this driver always submits, with every offset
+ * below checked against both the r40p0 and r44p1 kernel headers'
+ * structs.
  */
 struct kb_jm_atom {
    uint64_t seq_nr;
@@ -137,7 +137,7 @@ struct kb_jm_atom {
    uint8_t jobslot;        /* only with KB_JM_REQ_JOB_SLOT */
    uint32_t core_req;      /* KB_JM_REQ_* */
    uint8_t renderpass_id;  /* incremental rendering; not used (compiled out
-                              of the T820 kernel, jm-driver-needs.md §2.2) */
+                              of the T820 kernel) */
    uint8_t padding[7];     /* must be zero */
 };
 
@@ -147,8 +147,8 @@ struct kb_jm_atom {
 #define KB_JM_PRIO_REALTIME 3
 #define KB_JM_PRIO_INVALID  255
 
-/* base_jd_core_req bits (jm-driver-needs.md §2.2, kbase-r40p0-vs-r44p1.md
- * §3). */
+/* base_jd_core_req bits, checked against both kernels' headers.
+ */
 #define KB_JM_REQ_DEP                   0u
 #define KB_JM_REQ_FS                     (1u << 0)
 #define KB_JM_REQ_CS                     (1u << 1)
@@ -186,8 +186,8 @@ struct kb_jm_atom {
    (KB_JM_REQ_FS | KB_JM_REQ_CS | KB_JM_REQ_T | KB_JM_REQ_CF | KB_JM_REQ_V | \
     KB_JM_REQ_SOFT_JOB | KB_JM_REQ_ONLY_COMPUTE)
 
-/* enum base_jd_event_code: the codes read() can return (not exhaustive;
- * jm-driver-needs.md §2.5, kbase-r40p0-vs-r44p1.md §3). */
+/* enum base_jd_event_code: the codes read() can return (not
+ * exhaustive). */
 #define KB_JM_EVENT_NOT_STARTED        0x00u
 #define KB_JM_EVENT_DONE               0x01u
 #define KB_JM_EVENT_STOPPED            0x03u
@@ -223,10 +223,10 @@ struct kb_jm_event {
 };
 
 /* ---------------------------------------------------------------------- */
-/* JIT soft jobs. Our tiler-heap design is a driver-owned ring, not JIT
- * (g57-backend.md §8.1), so nothing in this layer builds these; they are
- * defined for completeness of the split (NEEDS §2.7) and in case a later
- * unit needs the blob's scheme as a fallback. */
+/* JIT soft jobs. Our tiler-heap design is a driver-owned ring, not JIT,
+ * so nothing in this layer builds these; they are defined for
+ * completeness of the split and in case a later unit needs the blob's
+ * scheme as a fallback. */
 
 #define KB_JM_JIT_ALLOC_MEM_TILER_ALIGN_TOP (1u << 0)
 #define KB_JM_JIT_ALLOC_HEAP_INFO_IS_SIZE   (1u << 1)

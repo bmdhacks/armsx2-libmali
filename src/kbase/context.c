@@ -252,9 +252,9 @@ map_user_reg_page(struct mali_kbase *kb)
 /*
  * BASE_MEM_MAP_TRACKING_HANDLE: on this job-manager kernel (UK 11.36, older
  * than 11.38) an allocation before this mapping exists fails with EINVAL
- * (kbase_mem_allow_alloc; docs/g57/kbase-r40p0-vs-r44p1.md §2 correction),
- * and munmapping it again blocks allocation once more. We never touch the
- * mapping's contents (PROT_NONE); mali_kbase_destroy unmaps it.
+ * (kbase_mem_allow_alloc), and munmapping it again blocks allocation once
+ * more. We never touch the mapping's contents (PROT_NONE); mali_kbase_destroy
+ * unmaps it.
  */
 static enum mali_kbase_result
 jm_map_tracking_page(struct mali_kbase *kb)
@@ -298,10 +298,10 @@ jit_init(struct mali_kbase *kb)
     *
     * On a job-manager context we issue it for the same reason the CSF
     * side does (it costs only a VA reservation, and keeps the context set
-    * up like the one the kernel was tested with); our driver has a
-    * driver-owned tiler-heap ring instead of JIT (g57-backend.md §8.1), so
-    * JIT memory itself is unused there too. The T820 blob's trim level is
-    * 0, not the CSF side's 5. */
+    * up like the one the kernel was tested with); our driver keeps its own
+    * tiler-heap ring instead of using JIT memory, so JIT memory itself is
+    * unused there too. The T820 blob's trim level is 0, not the CSF side's
+    * 5. */
    struct kb_ioctl_mem_jit_init ji = {
       .va_pages = KB_JIT_VA_PAGES,
       .max_allocations = KB_JIT_MAX_ALLOCATIONS,

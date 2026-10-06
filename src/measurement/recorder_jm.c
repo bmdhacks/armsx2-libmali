@@ -4,10 +4,10 @@
  */
 
 /*
- * Job-manager command-stream capture: LIBMALI_MEASURE's "csf" mode
- * (g57-backend.md §12 keeps that name -- it is the one capture switch,
- * KTD8, not a second one) on a v9 device. One file per captured
- * vkQueueSubmit, jm-SSSSSSSS.bin (S = submit number):
+ * Job-manager command-stream capture: LIBMALI_MEASURE's "csf" mode keeps
+ * that name on a v9 device too -- job-manager capture is a mode of the
+ * same knob, not a second one. One file per captured vkQueueSubmit,
+ * jm-SSSSSSSS.bin (S = submit number):
  *
  *   header   "MALIJM01", u32 version (1), u32 GPU product ID,
  *            u64 submit number, u64 GPU timestamp rate
@@ -17,16 +17,16 @@
  *               (kbase/uapi_jm.h), as submitted. More than one ATOMS
  *               record only when the submission needed more than one
  *               JOB_SUBMIT call (atom numbers ran out mid-submit,
- *               g57-backend.md §9.2)
+ *               which forces a flush)
  *     2 MEM     arg = 0 (command memory), a = GPU address (same-VA, so
  *               also the CPU address), payload = the bytes
  *     3 CMDBUF  arg = position in the submit, payload = u32 dispatches,
  *               draws, passes, 0
  *     0xffffffff END
  *
- * tools/measure/mali_jc_decode.py walks each atom's chain through its job
+ * tools/mali_jc_decode.py walks each atom's chain through its job
  * headers' Next pointers and decodes every job with v9.xml, the way
- * mali_cs_decode.py walks a CSF capture's rings with v11.xml.
+ * tools/mali_cs_decode.py walks a CSF capture's rings with v11.xml.
  *
  * Command memory is captured before the kernel sees the submission
  * (mali_jm_measure_capture_begin runs before mali_jm_build_begin in

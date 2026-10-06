@@ -72,8 +72,8 @@ struct mali_jm_measure_capture;
 #define MALI_JM_SLOT_COUNT 2
 #define MALI_JM_SLOT_NONE  0xff
 
-/* core_req of the two hardware atom kinds (the T820 blob's values, JC §7.3;
- * device check D6). */
+/* core_req of the two hardware atom kinds (the T820 blob's values,
+ * confirmed on the device). */
 #define MALI_JM_REQ_VTC  (KB_JM_REQ_CS | KB_JM_REQ_T | KB_JM_REQ_CF | KB_JM_REQ_COHERENT_GROUP)
 #define MALI_JM_REQ_FRAG KB_JM_REQ_FS
 
@@ -81,7 +81,7 @@ struct mali_jm_measure_capture;
 /* Command buffers: batches and job chains                                 */
 
 /* mali_jm_chain::pending: what the chain's next job has to wait for (an
- * in-chain barrier, g57-backend.md §5.2). BARRIER: the next job sets the
+ * in-chain barrier). BARRIER: the next job sets the
  * header's Barrier bit (it starts after every earlier job of the chain).
  * FLUSH: a Cache Flush job with Barrier and "Invalidate Shader Core Other"
  * goes first, for reads through a shader core's read-only caches (texture,
@@ -134,14 +134,14 @@ struct mali_jm_batch {
 };
 
 /*
- * Batch limits (g57-backend.md §5.3). A batch is closed before a job that
- * would take its vtc chain past MALI_JM_BATCH_MAX_JOBS jobs, outside a
- * render pass (a pass's tiling stays in one batch; the render pass side
- * checks the limit when a pass begins). The limit keeps a chain's GPU time
- * far below the T820 kernel's 1 s hard-stop (soft-stops resume a chain at
- * a job boundary, so only one long job is at risk, design §9.5) and the
- * 16-bit job index far from wrapping. 1024 vtc jobs are 3-6 ms of tiling
- * at ARMSX2's draw sizes (device check: D13 tunes it).
+ * Batch limits. A batch is closed before a job that would take its vtc
+ * chain past MALI_JM_BATCH_MAX_JOBS jobs, outside a render pass (a pass's
+ * tiling stays in one batch; the render pass side checks the limit when a
+ * pass begins). The limit keeps a chain's GPU time far below the T820
+ * kernel's 1 s hard-stop (soft-stops resume a chain at a job boundary, so
+ * only one long job is at risk) and the 16-bit job index far from
+ * wrapping. 1024 vtc jobs are 3-6 ms of tiling at ARMSX2's draw sizes,
+ * tuned on the device.
  */
 #define MALI_JM_BATCH_MAX_JOBS   1024
 #define MALI_JM_BATCH_MAX_PASSES 16
@@ -211,9 +211,9 @@ struct mali_jm_cmd {
    uint16_t req;
    uint8_t end_req;
 
-   /* Re-submission (g57-backend.md §5.2): command buffers recorded
-    * without ONE_TIME_SUBMIT note every GPU-written word, and submit
-    * restores them before every run after the first. */
+   /* Re-submission: command buffers recorded without ONE_TIME_SUBMIT
+    * note every GPU-written word, and submit restores them before every
+    * run after the first. */
    bool resubmit;
    bool submitted;
    uint64_t last_seq;            /* the submission that ran it last */
@@ -397,9 +397,9 @@ void mali_jm_cmd_note_reset(struct mali_cmd_buffer *cmd, void *dst, const void *
 
 /*
  * The JM barrier: what VkPipelineStageFlags2/VkAccessFlags2 on each side
- * require of the job chains (g57-backend.md §5.3): an in-chain barrier on
- * the vtc or fragment chain, a closed batch with the next one waiting for
- * the fragment atom, or a requirement the queue resolves at submit.
+ * require of the job chains: an in-chain barrier on the vtc or fragment
+ * chain, a closed batch with the next one waiting for the fragment atom,
+ * or a requirement the queue resolves at submit.
  * Outside a render pass; vkCmdPipelineBarrier2 handles the in-pass case.
  */
 void mali_jm_cmd_barrier(struct mali_cmd_buffer *cmd, VkPipelineStageFlags2 src_stages,
@@ -597,8 +597,8 @@ struct mali_jm_device {
 
    /* Set for the duration of one vkQueueSubmit when LIBMALI_MEASURE's
     * "csf" mode is on (recorder_jm.c calls it "csf" too: one capture
-    * knob, g57-backend.md §12); flush() (mali_jm_queue.c) appends every
-    * JOB_SUBMIT call's atoms to it. */
+    * knob); flush() (mali_jm_queue.c) appends every JOB_SUBMIT call's
+    * atoms to it. */
    struct mali_jm_measure_capture *measure_cap;
 
    struct {

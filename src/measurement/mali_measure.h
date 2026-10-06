@@ -216,10 +216,10 @@ void mali_measure_harvest(struct mali_measure *m, struct mali_measure_cmd *mc);
 struct mali_jm_chain;
 
 /*
- * The job-manager (v9) regions (g57-backend.md §12, timing_jm.c): a
- * System Timestamp Write Value job into chain now (barriered, so it
- * waits for every earlier job of the chain -- the same exclusive
- * attribution the CSF design chose by deferring its STORE_STATE). These
+ * The job-manager (v9) regions (timing_jm.c): a System Timestamp Write
+ * Value job into chain now (barriered, so it waits for every earlier job
+ * of the chain -- the same exclusive attribution the CSF side chose by
+ * deferring its STORE_STATE). These
  * are a separate implementation from mali_measure_begin/end/info/shader
  * above, not a frontend dispatch over them: those are compiled once, at
  * this build's fixed CSF (v11) struct mali_cmd_buffer layout and

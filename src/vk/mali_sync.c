@@ -19,8 +19,8 @@
  *
  * This file is mostly frontend-neutral: the lock, condition and
  * device-loss state it uses live on struct mali_device, not the CSF
- * device (design doc §2.3). The handful of operations that genuinely
- * differ per frontend (has a submit's work been reached, noticing a fault
+ * device. The handful of operations that genuinely differ per frontend
+ * (has a submit's work been reached, noticing a fault
  * before the next event, sync-file import/export) go through the
  * MALI_PER_ARCH() hooks declared in mali_queue.h (CSF, v11) and mali_jm.h
  * (job manager, v9). The file is built once per arch; on v9 a GPU signal's

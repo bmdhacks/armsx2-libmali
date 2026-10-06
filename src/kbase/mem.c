@@ -127,12 +127,12 @@ finish_region(struct mali_kbase *kb, struct mali_kbase_bo *bo, bool cookie,
 
 /*
  * kbase_check_alloc_flags / kbase_check_alloc_sizes, job-manager build
- * (references/kbase-ums9620/mali/mali_kbase_mem.c; byte-identical to the
- * r44p1 job-manager build, docs/g57/kbase-r40p0-vs-r44p1.md §5). Returns
- * NULL when flags and the extension pass, else the reason (for the log
- * line); every one of these is caught here rather than left to the
- * kernel's blanket ENOMEM, so a flag mistake does not look like an
- * out-of-memory failure.
+ * (mali_kbase_mem.c in the kernel source; the same checks on the T820
+ * kernel as on an r44p1 job-manager kernel). Returns NULL when flags
+ * and the extension pass, else the reason (for the log line); every
+ * one of these is caught here rather than left to the kernel's blanket
+ * ENOMEM, so a flag mistake does not look like an out-of-memory
+ * failure.
  */
 static const char *
 jm_check_alloc(uint64_t flags, uint64_t commit_pages, uint64_t extension)

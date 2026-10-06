@@ -385,11 +385,11 @@ static const char *const sq_names[MALI_SUBQUEUE_COUNT] = {
 /*
  * A job-manager region's mali_measure_region::sq is MALI_JM_SLOT_FRAG
  * (0) or MALI_JM_SLOT_VTC (1) (mali_jm.h), not an enum mali_subqueue
- * value, and the design calls for "vtc"/"frag" on JM (g57-backend.md
- * §12) rather than the CSF names above. This file builds once, at this
- * build's fixed v11 MALI_PAN_ARCH, so it cannot include the v9-only
- * mali_jm.h; the two slot values are repeated here as plain indices
- * instead.
+ * value, and these rows use "vtc"/"frag" labels on JM rather than the
+ * CSF names above. This file builds once, at this build's fixed v11
+ * MALI_PAN_ARCH, so it cannot include the v9-only mali_jm.h; the two
+ * slot values 0 and 1 are repeated here as plain indices instead of
+ * the symbolic ones mali_jm.h defines.
  */
 static const char *const jm_sq_names[2] = {"frag", "vtc"};
 

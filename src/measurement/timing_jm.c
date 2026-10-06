@@ -5,7 +5,7 @@
 
 /*
  * GPU timing of passes and dispatches on the job manager (v9): the
- * job-manager counterpart of timing.c (g57-backend.md §12).
+ * job-manager counterpart of timing.c.
  *
  * timing.c is compiled once, at this build's fixed CSF (v11) struct
  * mali_cmd_buffer layout and mali_cmd_alloc(); calling its functions with
@@ -25,9 +25,9 @@
  * vertex/tiler side or a dispatch, the pass's current fragment segment
  * for its fragment side. The Barrier bit is what makes the timestamp wait
  * for every earlier job of that chain -- JM has no deferred-store
- * scoreboard to lean on the way the CSF design's STORE_STATE does, so the
- * ordering has to come from the job header itself (job-chain.md §6.1: the
- * blob sets the same bit on its own Write Value jobs).
+ * scoreboard to lean on the way the CSF side's STORE_STATE does, so the
+ * ordering has to come from the job header itself (the blob sets the
+ * same bit on its own Write Value jobs).
  *
  * Reading: the same discipline as CSF (vkQueueSubmit queues every command
  * buffer that has regions on the device's pending list; a command buffer

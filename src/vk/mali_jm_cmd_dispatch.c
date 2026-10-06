@@ -6,7 +6,7 @@
 /*
  * Compute dispatch on the job manager (v9): one 128-byte Compute job per
  * dispatch in the open batch's vtc chain (Mesa gallium pan_jm.c
- * jm_launch_grid; the T820 blob writes the same job, JC §4). The FAU block,
+ * jm_launch_grid; the T820 blob writes the same job). The FAU block,
  * resource table and Local Storage descriptor come from the builders
  * shared with the v11 back half (mali_cmd_state.h); what differs is where
  * they go:

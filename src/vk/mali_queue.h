@@ -189,9 +189,9 @@ void mali_device_set_lost(struct mali_device *dev, const char *fmt, ...)
  * With dev->lock held: does this device's frontend have a fault that has
  * not been reported yet? CSF: a done slot with its error word set (a
  * stream faulted, whether or not the kernel's event has been read yet).
- * JM will scan atom events on demand instead (design doc §9.3). Returns
- * the message for mali_device_set_lost (called after the lock is
- * dropped), or NULL. Shared by mali_device_check_status, mali_queue_submit
+ * JM will scan atom events on demand instead. Returns the message for
+ * mali_device_set_lost (called after the lock is dropped), or NULL.
+ * Shared by mali_device_check_status, mali_queue_submit
  * and a host wait (mali_sync.c), so a wait notices a fault without
  * depending on the event thread to have run first.
  */
@@ -280,9 +280,9 @@ mali_queue_fence_va(const struct mali_csf_queue *q)
 /*
  * Frontend-neutral callers (mali_sync.c, mali_wsi.c) reach the sync-file
  * primitives above through these, so the call sites do not name the CSF
- * type. mali_sync_file.c stays CSF-only (design doc §2.1); a JM frontend
- * gets its own mali_jm_sync_file.c and its own MALI_PER_ARCH bodies, not
- * these inline ones.
+ * type. mali_sync_file.c stays CSF-only; a JM frontend gets its own
+ * mali_jm_sync_file.c and its own MALI_PER_ARCH bodies, not these inline
+ * ones.
  */
 static inline VkResult
 MALI_PER_ARCH(sync_file_gpu_wait)(struct mali_device *dev, int fd, uint64_t *value)

@@ -44,14 +44,14 @@
    "v1.r44p1-libmali." MALI_VERSION_STRING ".s" MALI_SHADER_CACHE_ID_SHORT
 
 /*
- * Q1 (docs/design/g57-backend.md §18, docs/decomp/g57/object-layer.md
- * "Facts settled"): what identity the G57 build (arch 9) reports to
- * ARMSX2. The working default is option D: report the same scheme the
- * G615 build uses above, not the T820 blob's own values (driverVersion
- * 40.0.0, driverInfo "v1.r40p0-01eac0.<hash>"). Both options report
- * driverID 9 (VK_DRIVER_ID_ARM_PROPRIETARY) either way. If the user's
- * final choice is option A instead, these two definitions are the only
- * change needed.
+ * What identity the G57 build (arch 9) reports to ARMSX2: the
+ * working choice is to report the same scheme the G615 build uses
+ * above, not the T820 blob's own values (driverVersion 40.0.0,
+ * driverInfo "v1.r40p0-01eac0.<hash>"). Either way driverID is 9
+ * (VK_DRIVER_ID_ARM_PROPRIETARY), so ARMSX2 treats both the same
+ * way for that check. Switching to the blob's own values instead
+ * of the G615 scheme is a one-line change to these two
+ * definitions.
  */
 #define MALI_V9_DRIVER_VERSION MALI_DRIVER_VERSION
 /* The same scheme, ending in the v9 build's own shader cache ID. */
@@ -79,15 +79,15 @@ mali_kbase_log_to_vk(void *user, const char *msg)
 bool
 mali_device_name(const struct mali_kbase_gpu_props *p, char *buf, size_t size)
 {
-   /* Arch 9: product 0x9001 is the G57, the only one the T820 blob
-    * accepts (design doc §3); 0x9003 is Mesa's other G57 product ID (the
-    * T820 blob has no name for it and would call it "UNKNOWN", but our
-    * driver names the GPU from its own table, not the blob's). The T820
-    * blob reports the bare name with no "MC<n>" suffix -- it has no
-    * "Mali-G57 MC%d" format string, unlike the G615's r44p1 build
-    * (docs/decomp/g57/object-layer.md, "Facts settled"; CORRECTION
-    * 2026-10-06). Q1's working default (docs/design/g57-backend.md §18)
-    * reports that same bare name. */
+   /* Arch 9: product 0x9001 is the G57, the only one the
+    * T820 blob accepts; 0x9003 is Mesa's other G57 product
+    * ID (the T820 blob has no name for it and would call it
+    * "UNKNOWN", but our driver names the GPU from its own
+    * table, not the blob's). The T820 blob reports the bare
+    * name with no "MC<n>" suffix -- it has no "Mali-G57
+    * MC%d" format string, unlike the G615's r44p1 build.
+    * This driver reports that same bare name below, for
+    * both product IDs on arch 9. */
    if (p->arch_major == 9) {
       const uint32_t product = p->product_id & 0xf00f;
       if (product != 0x9001 && product != 0x9003)
@@ -222,12 +222,12 @@ static const struct vk_device_extension_table mali_device_extensions = {
 };
 
 /*
- * v9 (G57) drops rasterization-order attachment access: the job-manager
- * render-pass encoder has no DCD Flags 2 there (NEEDS §8,
- * docs/design/g57-backend.md §6), and it is not implemented yet regardless.
- * It stays off even once that lands, until ARMSX2's G57 ROAA rule has an
- * exemption for our driver and a device measurement supports lifting it
- * (§13, §18 Q1); we do not touch the ARMSX2 side here.
+ * v9 (G57) drops rasterization-order attachment access: the
+ * job-manager render-pass encoder has no DCD Flags 2 there, and it
+ * is not implemented yet regardless. It stays off even once that
+ * lands, until ARMSX2's G57 ROAA rule has an exemption for our
+ * driver and a device measurement supports lifting it; we do not
+ * touch the ARMSX2 side here.
  */
 static struct vk_device_extension_table
 device_extensions_for_arch(uint32_t arch)
@@ -249,7 +249,7 @@ static void
 get_features(struct vk_features *f, uint32_t arch)
 {
    /* v9 (G57): rasterization-order attachment access is not advertised
-    * yet (device_extensions_for_arch() above; design doc §6, §13). */
+    * yet (device_extensions_for_arch() above). */
    const bool roaa = arch != 9;
 
    *f = (struct vk_features) {
@@ -321,8 +321,8 @@ sample_counts(unsigned bytes_per_pixel, unsigned tilebuf_bytes)
  * v11 (G615): 32 KiB when the low byte of core_features is 3 or 4, else
  * 16 KiB. v9 (G57): a fixed 16 KiB -- both writers of the T820 blob's
  * tile-buffer-budget global store the same constant regardless of
- * core_features (docs/decomp/g57/object-layer.md, "Facts settled"), and
- * Mesa's model table gives the G57 the same fixed 16 KiB.
+ * core_features, and Mesa's model table gives the G57 the same fixed
+ * 16 KiB.
  */
 static unsigned
 tilebuf_budget(const struct mali_kbase_gpu_props *p)
@@ -392,7 +392,7 @@ get_properties(const struct mali_physical_device *pdev, const char *name,
    const uint64_t max_alloc = MIN2(heap_size(p), 8ull << 30);
    const float ts_period = pdev->timestamp_hz ? 1e9f / (float)pdev->timestamp_hz : 1.0f;
 
-   /* Q1 (above): the G57 build's own identity scheme. */
+   /* The G57 build's own identity scheme (above). */
    const uint32_t driver_version =
       p->arch_major == 9 ? MALI_V9_DRIVER_VERSION : MALI_DRIVER_VERSION;
    const char *const driver_info =

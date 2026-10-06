@@ -6,32 +6,32 @@
 /*
  * Timestamp queries on the job manager (v9): vkCreateQueryPool,
  * vkDestroyQueryPool, vkCmdResetQueryPool, vkCmdWriteTimestamp,
- * vkGetQueryPoolResults (g57-backend.md §12, §18 Q2). ARMSX2 turns GPU
- * timing on for any device whose name is not "Mali-G615"
- * (docs/vulkan-waist.md §2.3), so the G57 build needs these; the G615
- * build does not (they stay waist stubs there, mali_v11_device_entrypoints
- * never gets them -- see the file comment in mali_jm.h, §2.2 of
- * g57-backend.md).
+ * vkGetQueryPoolResults. ARMSX2 turns GPU timing on for any device
+ * whose name is not "Mali-G615", so the G57 build needs these; the
+ * G615 build does not (they stay waist stubs there,
+ * mali_v11_device_entrypoints never gets them -- see the file comment
+ * in mali_jm.h).
  *
  * TIMESTAMP is the only query type: ARMSX2's other query use (OSD GPU
  * stats, VK_QUERY_TYPE_PIPELINE_STATISTICS) is gated on the
- * pipelineStatisticsQuery feature, which mali_physical_device.c reports
- * false (the counters it would need are deferred, measurement.md "Open"),
- * so ARMSX2 never creates that pool; occlusion queries are not in
- * ARMSX2's waist either (docs/vulkan-waist.md §3.3 lists only "timestamp"
- * and "pipeline statistics" as the query types it uses). Implementing
- * only TIMESTAMP here matches D-4.
+ * pipelineStatisticsQuery feature, which mali_physical_device.c
+ * reports false (the counters it would need are deferred), so
+ * ARMSX2 never creates that pool; occlusion queries are not in
+ * ARMSX2's waist either (it only uses the timestamp and
+ * pipeline-statistics query types). Implementing only TIMESTAMP here
+ * matches the driver's ARMSX2-only scope.
  *
  * Each query is 16 bytes of host-visible, uncached device memory: the
- * value System Timestamp writes at +0, an Immediate 64 availability flag
- * at +8 (our own layout; nothing reads it but our own
- * vkGetQueryPoolResults). Both words are Write Value jobs with the header
- * Barrier bit (job-chain.md §6.1: the blob's own query and timestamp
- * jobs are the same two types, same bit). mali_jm_measure_begin/end
+ * value System Timestamp writes at +0, an Immediate 64 availability
+ * flag at +8 (our own layout; nothing reads it but our own
+ * vkGetQueryPoolResults). Both words are Write Value jobs with the
+ * header Barrier bit (the blob's own query and timestamp jobs are
+ * the same two types, same bit). mali_jm_measure_begin/end
  * (timing_jm.c) use the identical pair for LIBMALI_MEASURE's timing
  * regions; this file does not share code with them beyond
- * mali_jm_cmd_write_value, because a query's two jobs are not a "region"
- * (no CSV row, no handle to end later from a different call).
+ * mali_jm_cmd_write_value, because a query's two jobs are not a
+ * "region" (no CSV row, no handle to end later from a different
+ * call).
  */
 
 #include "mali_cmd_state.h"

@@ -63,10 +63,10 @@
  * that ran out of numbers. One thread at a time polls (the reader); the
  * others sleep on the device condition variable, which it broadcasts.
  *
- * Device loss (KTD4): any event code other than DONE, except a FENCE_WAIT
+ * Device loss: any event code other than DONE, except a FENCE_WAIT
  * cancelled because the waited fence signalled an error, makes the device
- * lost, sticky, reported at the next submit, wait or status query. Nothing
- * is masked, TERMINATED included (device check D3 may revisit that).
+ * lost, sticky, reported at the next submit, wait or status query.
+ * Nothing is masked, TERMINATED included; that may be revisited later.
  */
 
 #ifndef _GNU_SOURCE
@@ -201,7 +201,7 @@ process_event(struct mali_device *dev, const struct kb_jm_event *ev)
       if (kind == MALI_JM_ATOM_FENCE_WAIT && ev->event_code == KB_JM_EVENT_JOB_CANCELLED) {
          /* The waited sync file signalled an error (the display's acquire
           * fence). Its followers depend on it with ORDER, so the error
-          * goes no further (g57-backend.md §9.5). */
+          * goes no further. */
          jd->stats.fence_wait_errors++;
          mesa_logw("libmali: a waited sync file signalled an error (submission %llu); "
                    "continuing", (unsigned long long)ev->udata[0]);
@@ -318,8 +318,8 @@ MALI_PER_ARCH(queue_reached)(struct mali_device *dev, const uint64_t req[MALI_SY
 }
 
 /* Shared with timing.c's completed(), for a mc created by either
- * frontend (g57-backend.md §12). jd is NULL on a CSF device, in which
- * case completed() never calls this. */
+ * frontend. jd is NULL on a CSF device, in which case completed() never
+ * calls this. */
 bool
 mali_jm_measure_reached(struct mali_jm_device *jd, uint64_t seq)
 {
@@ -404,8 +404,8 @@ flush(struct mali_device *dev)
 
    /* LIBMALI_MEASURE's "csf" mode (recorder_jm.c): the atoms of this
     * JOB_SUBMIT call, before they are handed to the kernel. More than
-    * one call per vkQueueSubmit only happens when atom numbers run out
-    * (g57-backend.md §9.2); the capture accumulates every call's atoms. */
+    * one call per vkQueueSubmit only happens when atom numbers run out;
+    * the capture accumulates every call's atoms. */
    if (unlikely(jd->measure_cap))
       mali_jm_measure_capture_atoms(jd->measure_cap, b->atoms, b->n);
 
@@ -481,10 +481,10 @@ make_terminal(struct mali_device *dev, bool tracker, mali_jm_ref *out)
 /*
  * An atom number, keeping `reserve` free for a terminal join. When there
  * are none: read events; if that is not enough, submit what is built so
- * far (ending in a terminal that brings its events back) and block reading
- * events until numbers come back (g57-backend.md §9.2). Every JOB_SUBMIT
- * ends in a non-coalesced atom that waits for the call's other atoms, so
- * the numbers in flight do come back as the GPU finishes.
+ * far (ending in a terminal that brings its events back) and block
+ * reading events until numbers come back. Every JOB_SUBMIT ends in a
+ * non-coalesced atom that waits for the call's other atoms, so the
+ * numbers in flight do come back as the GPU finishes.
  */
 static bool
 take_number(struct mali_device *dev, unsigned reserve, uint8_t *num, VkResult *result)
@@ -922,7 +922,7 @@ MALI_PER_ARCH(queue_submit)(struct vk_queue *vkq, struct vk_queue_submit *submit
       return vk_errorf(vkq, VK_ERROR_FEATURE_NOT_PRESENT, "sparse binding is not supported");
 
    pthread_mutex_lock(&dev->lock);
-   /* Free atom numbers and notice faults first (g57-backend.md §9.3 (a)). */
+   /* Free atom numbers and notice faults first. */
    const char *msg = MALI_PER_ARCH(queue_wait)(dev);
    if (msg || dev->lost) {
       char copy[sizeof(jd->fault_msg)];
@@ -947,9 +947,9 @@ MALI_PER_ARCH(queue_submit)(struct vk_queue *vkq, struct vk_queue_submit *submit
 
    const uint64_t seqno = q->seq + 1;
 
-   /* Measurement: queue the command buffers' timed regions for reading,
-    * and capture this submit's atoms and command memory if asked to
-    * (g57-backend.md §12). */
+   /* Measurement: queue the command buffers' timed regions for
+    * reading, and capture this submit's atoms and command memory if
+    * asked to. */
    if (unlikely(dev->measure)) {
       mali_jm_measure_submit(dev, submit, seqno);
       jd->measure_cap = mali_jm_measure_capture_begin(dev, submit, seqno);

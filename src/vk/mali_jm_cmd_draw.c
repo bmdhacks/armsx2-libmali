@@ -405,7 +405,7 @@ draw(struct mali_cmd_buffer *cmd, const struct mali_draw_info *di)
 
    /* Heap use: every vertex's packet (with an index count, an upper
     * bound) and about as much again for polygon-list entries. A guess
-    * for closing batches early enough (device check D13). */
+    * for closing batches early enough, tuned on the device. */
    mali_jm_cmd_heap_use(cmd, (uint64_t)di->count * di->instance_count *
                                 (t->packet_stride + 16));
    cmd->jm.cur.draws++;

@@ -16,13 +16,13 @@
  * channel (csf.c), and one kcpu queue for sync files (kcpu.c).
  *
  * mali_kbase_create also speaks the older job-manager (JM) frontend the
- * Mali-G57 uses instead of CSF (docs/design/g57-backend.md §3-§4): the
- * handshake tries CSF first, so the G615 is unaffected, and falls back to
- * the JM version check on EPERM. On a JM context, memory allocation takes
- * the JM rules (mem.c), and submission goes through job-manager atoms
- * instead of command-stream rings (jm.c: atom numbers, JOB_SUBMIT, event
- * read, POST_TERM, sync-file streams) — there is no JM equivalent of
- * queue groups, command-stream queues or the tiler heap in this file.
+ * Mali-G57 uses instead of CSF: the handshake tries CSF first, so the
+ * G615 is unaffected, and falls back to the JM version check on EPERM. On
+ * a JM context, memory allocation takes the JM rules (mem.c), and
+ * submission goes through job-manager atoms instead of command-stream
+ * rings (jm.c: atom numbers, JOB_SUBMIT, event read, POST_TERM, sync-file
+ * streams) — there is no JM equivalent of queue groups, command-stream
+ * queues or the tiler heap in this file.
  *
  * All kernel access goes through a backend (struct mali_kbase_backend), so
  * the host tests can run this code against a fake kernel.
@@ -275,7 +275,7 @@ struct mali_kbase {
 
 /*
  * Open the device and set up a context. mali_kbase_create works out which
- * frontend the kernel speaks (g57-backend.md §3):
+ * frontend the kernel speaks:
  *
  *   1. VERSION_CHECK (ioctl 52) proposing 1.20. On a matching answer the
  *      frontend is CSF and the rest of the sequence is the blob's CSF
@@ -509,11 +509,11 @@ enum mali_kbase_result mali_kbase_mem_flags_change(struct mali_kbase *kb,
 /*
  * 255 atom numbers (1..255; 0 means "no dependency" and is never handed
  * out), kept in a bitmap. A number may be reused only once its completion
- * event has been read (g57-backend.md §9.2): a dependency on a number
- * whose event has not been read, but that was freed anyway, would resolve
- * against whatever atom the kernel gives that number next. This type has
- * no lock of its own; whatever lock serializes a queue's submits and event
- * reads also covers its atom-number allocator.
+ * event has been read: a dependency on a number whose event has not been
+ * read, but that was freed anyway, would resolve against whatever atom
+ * the kernel gives that number next. This type has no lock of its own;
+ * whatever lock serializes a queue's submits and event reads also covers
+ * its atom-number allocator.
  */
 struct mali_kbase_jm_atom_ids {
    uint8_t bitmap[32]; /* bit n set: atom number n is in use */
@@ -537,10 +537,10 @@ unsigned mali_kbase_jm_atom_ids_free_count(const struct mali_kbase_jm_atom_ids *
  * JOB_SUBMIT: submits exactly the atoms the caller built (dependencies,
  * core_req, atom numbers already filled in; this layer does not interpret
  * them). More than 256 atoms, the T820 kernel's limit per ioctl call (jm.c
- * says why), are split across as many JOB_SUBMIT calls as
- * needed; nothing else is done between them (no per-edge round trip, see
- * g57-backend.md §9.1/§4.5 — the whole dependency graph is submitted with
- * pre_dep already resolved by the caller). n may be 0 (no-op).
+ * says why), are split across as many JOB_SUBMIT calls as needed; nothing
+ * else is done between them (no per-edge round trip — the whole
+ * dependency graph is submitted with pre_dep already resolved by the
+ * caller). n may be 0 (no-op).
  */
 enum mali_kbase_result
 mali_kbase_jm_submit(struct mali_kbase *kb, const struct kb_jm_atom *atoms, unsigned n);
@@ -563,7 +563,7 @@ mali_kbase_jm_read_events(struct mali_kbase *kb, struct kb_jm_event *ev, unsigne
  * readable, 0 on timeout, -1 on failure (errno set). Unlike the CSF side's
  * mali_kbase_event_wait, there is no wake_fd and no event thread at this
  * layer: job-manager completion has one reader at a time by the caller's
- * own choice and lock (g57-backend.md §9.3), not ours.
+ * own choice and lock, not ours.
  */
 int mali_kbase_jm_poll(struct mali_kbase *kb, int timeout_ms);
 
@@ -571,15 +571,15 @@ int mali_kbase_jm_poll(struct mali_kbase *kb, int timeout_ms);
  * POST_TERM: tells the kernel this context will submit no more atoms.
  * mali_kbase_destroy calls this itself (best effort) before closing the
  * fd. A caller that keeps reading events past that point sees
- * mali_kbase_jm_read_events report *terminated once they drain
- * (g57-backend.md §9.3, "Teardown").
+ * mali_kbase_jm_read_events report *terminated once they drain, with
+ * no more to come.
  */
 enum mali_kbase_result mali_kbase_jm_post_term(struct mali_kbase *kb);
 
 /*
  * STREAM_CREATE: a new sync-file timeline fd, the stream_fd a
- * FENCE_TRIGGER soft atom's base_fence names (g57-backend.md §9.4). name
- * is copied in, truncated to 31 bytes plus a NUL as the kernel requires;
+ * FENCE_TRIGGER soft atom's base_fence names. name is copied in, truncated
+ * to 31 bytes plus a NUL as the kernel requires;
  * NULL gives it an empty name.
  */
 enum mali_kbase_result

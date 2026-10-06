@@ -8,8 +8,8 @@
  * for swapchain images, binding a gralloc buffer to a swapchain image, and
  * the acquire and release fences, matching the blob's behaviour.
  *
- * Mostly frontend-neutral (g57-backend.md §2.1, §9.4): gralloc usage,
- * binding a buffer and acquire touch nothing that differs between the
+ * Mostly frontend-neutral: gralloc usage, binding a buffer and acquire
+ * touch nothing that differs between the
  * command-stream frontend (v11) and the job manager (v9) -- acquire goes
  * through the runtime's own sync-file import, which already dispatches to
  * whichever vk_sync type the physical device chose -- so they are compiled

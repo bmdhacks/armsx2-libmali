@@ -5,7 +5,7 @@
 
 /*
  * Sync files (Linux sync_file fds, Android's native fences) on the job
- * manager, through soft atoms (the T820 blob's mechanism, JMS §6.1):
+ * manager, through soft atoms (the T820 blob's mechanism):
  *
  *  - GPU wait on a sync file: a FENCE_WAIT atom whose jc points at a
  *    base_fence holding the fd; the kernel takes its own reference at

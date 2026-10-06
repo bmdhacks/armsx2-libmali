@@ -8,7 +8,7 @@
  * chains, job writing and linking, barriers, begin/end, and what a command
  * buffer that runs more than once needs restored.
  *
- * Every vkCmd* writes finished v9 jobs when it is recorded (D-3). A command
+ * Every vkCmd* writes finished v9 jobs when it is recorded. A command
  * buffer is a list of batches (mali_jm.h); a batch is one vertex/tiler/
  * compute ("vtc") job chain, which runs as one atom on job slot 1, and
  * fragment segments, each a fragment chain that runs as one atom on slot 0
@@ -22,9 +22,9 @@
  * write-combined command memory; nothing is read back. The queue's
  * "dsb st" before JOB_SUBMIT makes them visible.
  *
- * Barriers are applied lazily, per job slot (g57-backend.md §5.3): a
- * barrier records what the next vtc job and the next fragment job have to
- * wait for, and the requirement is resolved when such a job is recorded:
+ * Barriers are applied lazily, per job slot: a barrier records what the
+ * next vtc job and the next fragment job have to wait for, and the
+ * requirement is resolved when such a job is recorded:
  *
  *  - vtc after vtc: the Barrier bit on the next job of the vtc chain, after
  *    a Cache Flush job ("Invalidate Shader Core Other") when the reads go
@@ -208,7 +208,7 @@ mali_jm_cmd_note_reset(struct mali_cmd_buffer *cmd, void *dst, const void *tmpl,
 /* The job manager writes a job's Exception Status, First Incomplete Task
  * and Fault Pointer (header words 0-3) when it runs the job, and refuses
  * to run a job whose status is not zero; the rest of the header is ours
- * (panvk JM and the T820 blob reset the same words, JC §7.4). Other
+ * (panvk JM and the T820 blob reset the same words). Other
  * GPU-written words (tiler contexts, heap descriptors, the draw
  * descriptor's Vertex array words) are noted by the code that writes
  * them. */
@@ -674,8 +674,8 @@ MALI_PER_ARCH(CmdPipelineBarrier2)(VkCommandBuffer commandBuffer,
    if (cmd->gfx.render.active) {
       /* Inside a render pass only framebuffer-local dependencies are
        * allowed; the pass's vtc work all runs before its fragment jobs. A
-       * by-region fragment-to-fragment dependency is a draw that carries
-       * a primitive barrier (JC §12.3); without BY_REGION the blob emits
+       * by-region fragment-to-fragment dependency is a draw that
+       * carries a primitive barrier; without BY_REGION the blob emits
        * nothing. */
       const VkPipelineStageFlags2 fs = FRAG_RENDER_STAGES;
       if ((info->dependencyFlags & VK_DEPENDENCY_BY_REGION_BIT) &&

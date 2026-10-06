@@ -100,9 +100,9 @@ mali_device_intern_key(struct mali_device *dev, const void *data, size_t size)
 }
 
 /*
- * Device state every frontend needs alike (design doc §2.3): the
- * command-buffer slab cache, internal shader caches, and the sync-object
- * lock, condition and device-loss state. Set up before the frontend's own
+ * Device state every frontend needs alike: the command-buffer slab
+ * cache, internal shader caches, and the sync-object lock, condition and
+ * device-loss state. Set up before the frontend's own
  * device-init (mali_csf_device_init today; a JM equivalent later) so that
  * state exists under either frontend, and torn down after it, since
  * nothing here depends on dev->csf.
@@ -284,9 +284,9 @@ mali_CreateDevice(VkPhysicalDevice physicalDevice,
    mali_bo_pool_init_exec(&dev->exec_pool, dev->kbase);
    mali_bo_pool_init_desc(&dev->desc_pool, dev->kbase);
    mali_device_keys_init(dev);
-   /* Frontend-neutral device state (design doc §2.3): every path below
-    * this point that can fail calls device_destroy, which tears this down
-    * again, so it must exist before the first of them. */
+   /* Frontend-neutral device state: every path below this point that can
+    * fail calls device_destroy, which tears this down again, so it must
+    * exist before the first of them. */
    device_fe_state_init(dev);
    if (mali_compiler_init(pdev->props.gpu_id) != MALI_COMPILE_OK) {
       result = vk_errorf(pdev, VK_ERROR_INITIALIZATION_FAILED,

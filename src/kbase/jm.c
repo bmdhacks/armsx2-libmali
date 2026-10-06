@@ -13,8 +13,8 @@
  *
  * What is NOT here: anything that interprets core_req, dependencies or
  * udata, and anything that builds job chains. The queue/command-buffer
- * layer above this one owns that (g57-backend.md §5-§9); this layer only
- * moves bytes to and from the kernel.
+ * layer above this one owns that; this layer only moves bytes to and from
+ * the kernel.
  */
 
 #include <errno.h>
@@ -30,8 +30,8 @@ void
 mali_kbase_jm_atom_ids_init(struct mali_kbase_jm_atom_ids *ids)
 {
    memset(ids, 0, sizeof(*ids));
-   /* Atom number 0 means "no dependency" (jm-driver-needs.md §2.2) and is
-    * never handed out: mark it permanently in use. */
+   /* Atom number 0 means "no dependency" in a job-chain's dependency
+    * fields and is never handed out: mark it permanently in use. */
    ids->bitmap[0] |= 1u;
 }
 
@@ -144,9 +144,9 @@ mali_kbase_jm_read_events(struct mali_kbase *kb, struct kb_jm_event *ev, unsigne
       if (err == EAGAIN || err == EWOULDBLOCK)
          return MALI_KBASE_SUCCESS;
       if (err == EPIPE) {
-         /* kbase_event_close/kbase_event_pending, JM build: once POST_TERM
-          * has drained the queued events, read() answers EPIPE forever
-          * (jm-driver-needs.md §2.4). */
+         /* kbase_event_close/kbase_event_pending, JM build: once
+          * POST_TERM has drained the queued events, read() answers
+          * EPIPE forever. */
          if (terminated)
             *terminated = true;
          return MALI_KBASE_SUCCESS;
