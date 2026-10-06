@@ -54,7 +54,9 @@
  * change needed.
  */
 #define MALI_V9_DRIVER_VERSION MALI_DRIVER_VERSION
-#define MALI_V9_DRIVER_INFO MALI_DRIVER_INFO
+/* The same scheme, ending in the v9 build's own shader cache ID. */
+#define MALI_V9_DRIVER_INFO \
+   "v1.r44p1-libmali." MALI_VERSION_STRING ".s" MALI_SHADER_CACHE_ID_V9_SHORT
 
 /* Arch the driver was built for (meson.build pan_arch). */
 #ifndef MALI_PAN_ARCH
@@ -357,15 +359,18 @@ hash_uuid(uint8_t out[VK_UUID_SIZE], const void *data, size_t size)
  * format changes, and should not change otherwise: ARMSX2 throws its
  * whole pipeline cache away when the UUID differs, so a UUID tied to the
  * commit made every driver update start with an empty cache. It hashes
- * MALI_SHADER_CACHE_ID (a hash of every source that can change a shader
- * binary, src/vk/gen_shader_cache_id.py) and the GPU ID.
+ * the architecture's shader cache ID (a hash of every source that can
+ * change that architecture's shader binaries, src/vk/gen_shader_cache_id.py:
+ * MALI_SHADER_CACHE_ID for the G615, MALI_SHADER_CACHE_ID_V9 for the G57)
+ * and the GPU ID.
  */
 static void
-pipeline_cache_uuid(uint8_t out[VK_UUID_SIZE], uint64_t gpu_id)
+pipeline_cache_uuid(uint8_t out[VK_UUID_SIZE], const char *cache_id, size_t cache_id_size,
+                    uint64_t gpu_id)
 {
    struct mesa_blake3 ctx;
    _mesa_blake3_init(&ctx);
-   _mesa_blake3_update(&ctx, MALI_SHADER_CACHE_ID, sizeof(MALI_SHADER_CACHE_ID));
+   _mesa_blake3_update(&ctx, cache_id, cache_id_size);
    _mesa_blake3_update(&ctx, &gpu_id, sizeof(gpu_id));
 
    blake3_hash h;
@@ -540,7 +545,12 @@ get_properties(const struct mali_physical_device *pdev, const char *name,
    props->deviceUUID[4] = 1;
    /* driverUUID: a hash of driverInfo, so never the blob's. */
    hash_uuid(props->driverUUID, driver_info, strlen(driver_info) + 1);
-   pipeline_cache_uuid(props->pipelineCacheUUID, p->gpu_id);
+   if (p->arch_major == 9)
+      pipeline_cache_uuid(props->pipelineCacheUUID, MALI_SHADER_CACHE_ID_V9,
+                          sizeof(MALI_SHADER_CACHE_ID_V9), p->gpu_id);
+   else
+      pipeline_cache_uuid(props->pipelineCacheUUID, MALI_SHADER_CACHE_ID,
+                          sizeof(MALI_SHADER_CACHE_ID), p->gpu_id);
 }
 
 /* ---------------------------------------------------------------------- */

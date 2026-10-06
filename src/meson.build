@@ -111,13 +111,15 @@ mali_version_h = vcs_tag(
 # pipelineCacheUUID comes from a hash of the sources that can change shader
 # binaries (vk/gen_shader_cache_id.py), not from the commit, so a driver
 # update that leaves the compiler alone keeps applications' pipeline caches.
+# One hash per architecture: a change only the v9 build sees leaves the
+# v11 one alone.
 # The script runs on every build and rewrites the header only on a change.
 mali_shader_cache_id_h = custom_target(
   'mali_shader_cache_id.h',
   output : 'mali_shader_cache_id.h',
   command : [prog_python, files('vk/gen_shader_cache_id.py'),
              '--root', meson.project_source_root(),
-             '--extra', 'pan_arch=@0@'.format(pan_arch),
+             '--arch', '@0@'.format(pan_arch), '--arch', '9',
              '--out-h', '@OUTPUT@'],
   build_always_stale : true,
 )
