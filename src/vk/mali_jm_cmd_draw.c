@@ -166,6 +166,19 @@ prim_secondary_bit(void)
    return p.opaque[0];
 }
 
+/* The Primitive word's Point Size Array Format field: when it is not
+ * NONE, the shader writes the point size and the job's Primitive Size
+ * section holds the size array pointer instead of a fixed size. */
+static inline uint32_t
+prim_point_size_array_mask(void)
+{
+   struct mali_primitive_packed p;
+   pan_pack_nodefaults(&p, PRIMITIVE, cfg) {
+      cfg.point_size_array_format = MALI_POINT_SIZE_ARRAY_FORMAT_FP32;   /* both bits */
+   }
+   return p.opaque[0];
+}
+
 /* ---------------------------------------------------------------------- */
 /* Draw state into the template                                            */
 
@@ -256,8 +269,14 @@ prepare_draw(struct mali_cmd_buffer *cmd, const struct mali_draw_info *di)
        * position only. */
       t->packet_stride = t->secondary ? bd->vary_size + 16 : 16;
       w[TW_ALLOC] = t->packet_stride | (t->secondary ? bd->vary_size : 0) << 16;
-      /* Point size 1.0 unless the shader writes it; line width. */
-      w[TW_PSIZE] = fui(lines ? dyn->rs.line.width : 1.0f);
+      /* Lines: the line width. Points whose shader writes the size: the
+       * field is the size array pointer, not used when the sizes come in
+       * the vertex packets; 0, as Mesa writes, not a float's bits. Other
+       * points: 1.0. */
+      if (t->prim0 & prim_point_size_array_mask())
+         w[TW_PSIZE] = 0;
+      else
+         w[TW_PSIZE] = fui(lines ? dyn->rs.line.width : 1.0f);
       tset64(&w[TW_VAR_ENV], ENV_SHADER, t->secondary ? spd_var : 0);
    }
    if (d->dirty & MALI_GFX_DIRTY_VIEWPORT) {
