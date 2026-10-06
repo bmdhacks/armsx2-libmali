@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 #
-# libmali: Vulkan driver for Arm Mali (kbase kernel driver).
+# malisx2: Vulkan driver for Arm Mali (kbase kernel driver).
 #
 # Layout:
 #   src/           the driver
@@ -12,7 +12,7 @@
 #   cross/         meson cross files
 
 project(
-  'libmali',
+  'malisx2',
   ['c', 'cpp'],
   version : '0.0.1',
   license : 'MIT',
@@ -49,7 +49,7 @@ add_languages('rust', required : true, native : true)
 rustc = meson.get_compiler('rust')
 rust = import('rust')
 
-# Mesa: branch libmali of github.com/bmdhacks/armsx2-turnip (upstream Mesa
+# Mesa: branch malisx2 of github.com/bmdhacks/armsx2-turnip (upstream Mesa
 # plus our kraid changes) at this commit, checked out (or symlinked) at
 # mesa/. Only the sources are used; Mesa's own build is not run.
 mesa_commit = '730a6284cb7a88f6c19a07f1caea35c7a2ae64f2'

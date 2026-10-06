@@ -203,7 +203,7 @@ process_event(struct mali_device *dev, const struct kb_jm_event *ev)
           * fence). Its followers depend on it with ORDER, so the error
           * goes no further. */
          jd->stats.fence_wait_errors++;
-         mesa_logw("libmali: a waited sync file signalled an error (submission %llu); "
+         mesa_logw("malisx2: a waited sync file signalled an error (submission %llu); "
                    "continuing", (unsigned long long)ev->udata[0]);
       } else {
          jm_set_fault(jd,
@@ -402,7 +402,7 @@ flush(struct mali_device *dev)
    if (!b->n)
       return VK_SUCCESS;
 
-   /* LIBMALI_MEASURE's "csf" mode (recorder_jm.c): the atoms of this
+   /* MALISX2_MEASURE's "csf" mode (recorder_jm.c): the atoms of this
     * JOB_SUBMIT call, before they are handed to the kernel. More than
     * one call per vkQueueSubmit only happens when atom numbers run out;
     * the capture accumulates every call's atoms. */
@@ -1127,7 +1127,7 @@ MALI_PER_ARCH(device_quiesce)(struct mali_device *dev)
    pthread_mutex_unlock(&dev->lock);
 
    if (left) {
-      mesa_logw("libmali: %u job-manager atoms are still in flight at device destruction; "
+      mesa_logw("malisx2: %u job-manager atoms are still in flight at device destruction; "
                 "leaving the context and its memory to the kernel until the process exits",
                 left);
       mali_kbase_abandon(jd->kb);

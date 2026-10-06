@@ -49,14 +49,14 @@ mali_waist_void_call(struct mali_waist_entry *e)
    bool first = count_call(e);
 
    if (MALI_MEASUREMENT_BUILD) {
-      mesa_loge("libmali: %s called (%s); aborting (measurement build)",
+      mesa_loge("malisx2: %s called (%s); aborting (measurement build)",
                 e->name, class_text(e->cls));
       abort();
    }
 
    p_atomic_inc(&skipped_calls);
    if (first)
-      mesa_loge("libmali: %s called (%s); call skipped", e->name,
+      mesa_loge("malisx2: %s called (%s); call skipped", e->name,
                 class_text(e->cls));
 }
 
@@ -64,7 +64,7 @@ VkResult
 mali_waist_result_call(struct mali_waist_entry *e)
 {
    if (count_call(e))
-      mesa_loge("libmali: %s called (%s); returning VK_ERROR_FEATURE_NOT_PRESENT",
+      mesa_loge("malisx2: %s called (%s); returning VK_ERROR_FEATURE_NOT_PRESENT",
                 e->name, class_text(e->cls));
    return MALI_WAIST_ERROR;
 }
@@ -73,7 +73,7 @@ void
 mali_waist_value_call(struct mali_waist_entry *e)
 {
    if (count_call(e))
-      mesa_loge("libmali: %s called (%s); returning 0", e->name,
+      mesa_loge("malisx2: %s called (%s); returning 0", e->name,
                 class_text(e->cls));
 }
 

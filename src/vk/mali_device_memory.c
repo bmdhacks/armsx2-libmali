@@ -81,7 +81,7 @@ dmabuf_sync(struct mali_device_memory *mem, uint64_t flags)
       ret = ioctl(mem->dmabuf_fd, DMA_BUF_IOCTL_SYNC, &s);
    } while (ret == -1 && (errno == EINTR || errno == EAGAIN));
    if (ret == -1 && errno != ENOTTY)
-      mesa_logw("libmali: DMA_BUF_IOCTL_SYNC 0x%llx on fd %d failed: %s",
+      mesa_logw("malisx2: DMA_BUF_IOCTL_SYNC 0x%llx on fd %d failed: %s",
                 (unsigned long long)s.flags, mem->dmabuf_fd, strerror(errno));
 }
 

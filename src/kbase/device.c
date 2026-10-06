@@ -162,7 +162,7 @@ void
 kb_log(mali_kbase_log_fn fn, void *user, const char *fmt, ...)
 {
    char buf[512];
-   int n = snprintf(buf, sizeof(buf), "libmali/kbase: ");
+   int n = snprintf(buf, sizeof(buf), "malisx2/kbase: ");
    va_list ap;
    va_start(ap, fmt);
    vsnprintf(buf + n, sizeof(buf) - (size_t)n, fmt, ap);

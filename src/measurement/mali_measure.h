@@ -16,8 +16,8 @@
  *    the recorded streams they CALL and the command memory those streams
  *    point at, one file per submit, for tools/mali_cs_decode.py.
  *
- * One configuration string, from the environment variable LIBMALI_MEASURE
- * or, on Android, the property debug.libmali.measure:
+ * One configuration string, from the environment variable MALISX2_MEASURE
+ * or, on Android, the property debug.malisx2.measure:
  *
  *   timing | draws | csf | both, then any of dir=PATH chunk=N ring=N
  *   start=N count=N csfmax=N trigger=PATH, comma-separated
@@ -72,8 +72,8 @@ struct mali_measure_config {
 bool mali_measure_config_parse(const char *str, struct mali_measure_config *cfg,
                                const char **err);
 
-/* The configuration of this process: LIBMALI_MEASURE, else (Android)
- * debug.libmali.measure. False when nothing is enabled. */
+/* The configuration of this process: MALISX2_MEASURE, else (Android)
+ * debug.malisx2.measure. False when nothing is enabled. */
 bool mali_measure_config_get(struct mali_measure_config *cfg);
 
 /* The directory compiled shaders are written to ("shaders" mode:

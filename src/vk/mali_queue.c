@@ -81,7 +81,7 @@ mali_device_set_lost(struct mali_device *dev, const char *fmt, ...)
    if (p_atomic_cmpxchg(&dev->lost_reported, 0, 1) == 0) {
       /* Always in the log, whatever the build (the runtime's own message
        * is debug-only). Device loss is never hidden. */
-      mesa_loge("libmali: device lost: %s", msg);
+      mesa_loge("malisx2: device lost: %s", msg);
       vk_device_set_lost(&dev->vk, "%s", msg);
       mali_measure_event(dev, "device lost: %s", msg);
    }
@@ -233,7 +233,7 @@ event_thread_main(void *arg)
          mali_kbase_cpu_queue_dump(kb);
          break;
       default:
-         mesa_logw("libmali: unknown kbase notification type %u", n.type);
+         mesa_logw("malisx2: unknown kbase notification type %u", n.type);
          break;
       }
    }

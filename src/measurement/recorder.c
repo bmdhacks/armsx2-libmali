@@ -209,7 +209,7 @@ mali_measure_capture_end(struct mali_device *dev, struct mali_measure_capture *c
       mali_measure_add_capture(m, name, cap->seqno, bytes);
    } else {
       if (!m->write_failed)
-         mesa_loge("libmali: measurement: cannot write %s", path);
+         mesa_loge("malisx2: measurement: cannot write %s", path);
       m->write_failed = true;
    }
    pthread_mutex_unlock(&m->lock);

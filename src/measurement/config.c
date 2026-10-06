@@ -58,9 +58,9 @@ config_defaults(struct mali_measure_config *c)
    memset(c, 0, sizeof(*c));
 #ifdef __ANDROID__
    /* The shell user's scratch area; an app sets dir= to its own. */
-   snprintf(c->dir, sizeof(c->dir), "/data/local/tmp/libmali-measure");
+   snprintf(c->dir, sizeof(c->dir), "/data/local/tmp/malisx2-measure");
 #else
-   snprintf(c->dir, sizeof(c->dir), "libmali-measure");
+   snprintf(c->dir, sizeof(c->dir), "malisx2-measure");
 #endif
    c->chunk = 256;
    c->ring = 64;
@@ -171,11 +171,11 @@ mali_measure_config_parse(const char *str, struct mali_measure_config *c,
 static bool
 config_read(struct mali_measure_config *c)
 {
-   const char *s = getenv("LIBMALI_MEASURE");
+   const char *s = getenv("MALISX2_MEASURE");
 #ifdef __ANDROID__
    char prop[PROP_VALUE_MAX] = "";
    if (!s || !*s) {
-      if (__system_property_get("debug.libmali.measure", prop) > 0)
+      if (__system_property_get("debug.malisx2.measure", prop) > 0)
          s = prop;
    }
 #endif
@@ -184,7 +184,7 @@ config_read(struct mali_measure_config *c)
 
    const char *err;
    if (!mali_measure_config_parse(s, c, &err)) {
-      mesa_loge("libmali: measurement off: cannot parse \"%s\" at \"%s\"", s, err);
+      mesa_loge("malisx2: measurement off: cannot parse \"%s\" at \"%s\"", s, err);
       return false;
    }
    return true;
@@ -247,7 +247,7 @@ clock_init(struct mali_measure *m)
       m->hz = m->measured_hz;
       m->hz_source = "measured";
       if (m->cntfrq)
-         mesa_logi("libmali: measurement: GPU timestamps run at %" PRIu64
+         mesa_logi("malisx2: measurement: GPU timestamps run at %" PRIu64
                    " Hz, not CNTFRQ_EL0's %" PRIu64 " Hz; using the measured rate",
                    m->measured_hz, m->cntfrq);
    } else {
@@ -300,7 +300,7 @@ static void
 write_failed(struct mali_measure *m, const char *what)
 {
    if (!m->write_failed)
-      mesa_loge("libmali: measurement: cannot write %s in %s: %s", what, m->cfg.dir,
+      mesa_loge("malisx2: measurement: cannot write %s in %s: %s", what, m->cfg.dir,
                 strerror(errno));
    m->write_failed = true;
 }
@@ -511,7 +511,7 @@ mali_measure_write_manifest(struct mali_measure *m)
       return;
    }
 
-   fprintf(fp, "{\n  \"format\": \"libmali-measure 1\",\n");
+   fprintf(fp, "{\n  \"format\": \"malisx2-measure 1\",\n");
    fprintf(fp, "  \"driver\": \"%s %s\",\n", MALI_VERSION_STRING, MALI_GIT_SHA);
    fprintf(fp, "  \"gpu_product_id\": \"0x%04x\",\n", (unsigned)m->dev->kbase->props.product_id);
    fprintf(fp, "  \"pid\": %d,\n  \"config\": ", (int)getpid());
@@ -565,7 +565,7 @@ mali_measure_init(struct mali_device *dev)
    if (!mali_measure_config_get(&cfg))
       return;
    if (!make_dirs(cfg.dir)) {
-      mesa_loge("libmali: measurement off: cannot create %s: %s", cfg.dir, strerror(errno));
+      mesa_loge("malisx2: measurement off: cannot create %s: %s", cfg.dir, strerror(errno));
       return;
    }
 
@@ -574,11 +574,11 @@ mali_measure_init(struct mali_device *dev)
       return;
    m->dev = dev;
    m->cfg = cfg;
-   const char *s = getenv("LIBMALI_MEASURE");
+   const char *s = getenv("MALISX2_MEASURE");
 #ifdef __ANDROID__
    char prop[PROP_VALUE_MAX] = "";
    if (!s || !*s) {
-      __system_property_get("debug.libmali.measure", prop);
+      __system_property_get("debug.malisx2.measure", prop);
       s = prop;
    }
 #endif
@@ -593,7 +593,7 @@ mali_measure_init(struct mali_device *dev)
    mali_measure_write_manifest(m);
    pthread_mutex_unlock(&m->lock);
    dev->measure = m;
-   mesa_logi("libmali: measurement on (%s) into %s, timestamps at %" PRIu64 " Hz (%s)",
+   mesa_logi("malisx2: measurement on (%s) into %s, timestamps at %" PRIu64 " Hz (%s)",
              m->cfg_str, cfg.dir, m->hz, m->hz_source);
 }
 
@@ -659,7 +659,7 @@ mali_measure_shader_dir(void)
          snprintf(dir, sizeof(dir), "%s/shaders", c.dir);
          ok = make_dirs(dir);
          if (!ok)
-            mesa_loge("libmali: cannot create %s", dir);
+            mesa_loge("malisx2: cannot create %s", dir);
       }
    }
    simple_mtx_unlock(&lock);

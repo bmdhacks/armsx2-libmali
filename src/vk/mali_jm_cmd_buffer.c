@@ -262,7 +262,7 @@ chain_has_room(struct mali_cmd_buffer *cmd, const struct mali_jm_chain *c)
 {
    if (likely(c->index < UINT16_MAX - 2))
       return true;
-   mesa_loge("libmali: a job chain ran out of job indices (%u jobs)", c->jobs);
+   mesa_loge("malisx2: a job chain ran out of job indices (%u jobs)", c->jobs);
    vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
    return false;
 }

@@ -40,7 +40,7 @@ stream_get(struct mali_device *dev, int *out)
    struct mali_jm_device *jd = dev->jm;
    if (jd->stream_fd < 0) {
       char name[32];
-      snprintf(name, sizeof(name), "libmali_%d", (int)getpid());
+      snprintf(name, sizeof(name), "malisx2_%d", (int)getpid());
       enum mali_kbase_result r = mali_kbase_stream_create(jd->kb, name, &jd->stream_fd);
       if (r != MALI_KBASE_SUCCESS) {
          jd->stream_fd = -1;

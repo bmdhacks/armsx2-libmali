@@ -21,7 +21,7 @@ pre_args = [
   '-D__STDC_CONSTANT_MACROS',
   '-D__STDC_FORMAT_MACROS',
   '-D__STDC_LIMIT_MACROS',
-  '-DPACKAGE_VERSION="libmali-@0@"'.format(meson.project_version()),
+  '-DPACKAGE_VERSION="malisx2-@0@"'.format(meson.project_version()),
   '-DMESA_DEBUG=@0@'.format((get_option('buildtype') == 'debug').to_int()),
   '-DHAVE_OPENGL=0',
   '-DHAVE_OPENGL_ES_1=0',

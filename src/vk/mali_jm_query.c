@@ -27,7 +27,7 @@
  * vkGetQueryPoolResults). Both words are Write Value jobs with the
  * header Barrier bit (the blob's own query and timestamp jobs are
  * the same two types, same bit). mali_jm_measure_begin/end
- * (timing_jm.c) use the identical pair for LIBMALI_MEASURE's timing
+ * (timing_jm.c) use the identical pair for MALISX2_MEASURE's timing
  * regions; this file does not share code with them beyond
  * mali_jm_cmd_write_value, because a query's two jobs are not a
  * "region" (no CSV row, no handle to end later from a different

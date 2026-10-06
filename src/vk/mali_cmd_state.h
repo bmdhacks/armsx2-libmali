@@ -652,7 +652,7 @@ mali_gfx_blend_shader_for(struct mali_cmd_buffer *cmd, const struct mali_graphic
       static bool warned;
       if (!warned) {
          warned = true;
-         mesa_logw("libmali: a blend shader failed to compile; the colour is stored "
+         mesa_logw("malisx2: a blend shader failed to compile; the colour is stored "
                    "unblended");
       }
       return 0;

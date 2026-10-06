@@ -18,7 +18,7 @@
 #define KB_PRINTF(a, b)
 #endif
 
-/* Log one line through the context's log hook ("libmali/kbase: " prefix). */
+/* Log one line through the context's log hook ("malisx2/kbase: " prefix). */
 void kb_log(mali_kbase_log_fn fn, void *user, const char *fmt, ...) KB_PRINTF(3, 4);
 
 #define KB_LOG(kb, ...) kb_log((kb)->log, (kb)->log_user, __VA_ARGS__)

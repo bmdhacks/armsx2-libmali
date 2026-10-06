@@ -52,7 +52,7 @@
  * own message is debug-only): the loader turns them into a failed
  * vkCreateSwapchainKHR or present with no reason given. */
 #define wsi_errorf(obj, result, ...)                                            \
-   (mesa_loge("libmali: WSI: " __VA_ARGS__), vk_errorf(obj, result, __VA_ARGS__))
+   (mesa_loge("malisx2: WSI: " __VA_ARGS__), vk_errorf(obj, result, __VA_ARGS__))
 
 #if PAN_ARCH != 9
 
@@ -362,7 +362,7 @@ out:
  * vkQueueSignalReleaseImageANDROID's entry point (mali_android.c) and the
  * host tests call this name; mali_v9_wsi_release is the only other
  * variant (defined when this same file is built at PAN_ARCH=9 into
- * libmali_vk_v9, always linked next to this, non-v9, build). Compiled
+ * malisx2_vk_v9, always linked next to this, non-v9, build). Compiled
  * once here, like the three functions above.
  */
 extern VkResult mali_v9_wsi_release(struct mali_queue *queue, uint32_t count,

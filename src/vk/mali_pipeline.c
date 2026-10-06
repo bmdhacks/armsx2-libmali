@@ -233,7 +233,7 @@ stage_to_nir(struct mali_device *dev, VkPipelineCreateFlags2KHR flags, struct st
 }
 
 /*
- * LIBMALI_MEASURE=shaders: every stage compiled (not cache hits) is
+ * MALISX2_MEASURE=shaders: every stage compiled (not cache hits) is
  * written as <dir>/shaders/<key>.<stage>.spv and .bin, with a line in
  * index.txt, so the machine code of an application's shaders can be
  * disassembled offline.

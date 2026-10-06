@@ -221,7 +221,7 @@ struct mali_jm_cmd {
    struct util_dynarray reset_data;
 
    /* Timing regions (measurement/timing_jm.c); NULL unless
-    * LIBMALI_MEASURE's "timing" mode is on. */
+    * MALISX2_MEASURE's "timing" mode is on. */
    struct mali_measure_cmd *measure;
 };
 
@@ -595,7 +595,7 @@ struct mali_jm_device {
    /* Atoms of the JOB_SUBMIT being built (only while building). */
    struct mali_jm_build *build;
 
-   /* Set for the duration of one vkQueueSubmit when LIBMALI_MEASURE's
+   /* Set for the duration of one vkQueueSubmit when MALISX2_MEASURE's
     * "csf" mode is on (recorder_jm.c calls it "csf" too: one capture
     * knob); flush() (mali_jm_queue.c) appends every JOB_SUBMIT call's
     * atoms to it. */

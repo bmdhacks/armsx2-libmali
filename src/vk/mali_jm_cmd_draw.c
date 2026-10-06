@@ -374,7 +374,7 @@ draw(struct mali_cmd_buffer *cmd, const struct mali_draw_info *di)
    if (!di->count || !di->instance_count)
       return;
    if (!r->active || !d->pipeline || !d->pipeline->vs) {
-      vk_logw(VK_LOG_OBJS(cmd), "libmali: draw outside a render pass or without a pipeline");
+      vk_logw(VK_LOG_OBJS(cmd), "malisx2: draw outside a render pass or without a pipeline");
       return;
    }
    if (vk_command_buffer_has_error(&cmd->vk))

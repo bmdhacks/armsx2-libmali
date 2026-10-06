@@ -1,4 +1,4 @@
-# armsx2-libmali
+# malisx2
 
 A Vulkan driver for Arm Mali GPUs that talks to Arm's **kbase** kernel
 driver, the one Android phones and handhelds ship. It is written for one
@@ -14,7 +14,7 @@ driver is built on Mesa's shared Vulkan runtime.
 ## Building
 
 The driver builds against Mesa sources checked out at `mesa/`: branch
-`libmali` of [bmdhacks/armsx2-turnip](https://github.com/bmdhacks/armsx2-turnip)
+`malisx2` of [bmdhacks/armsx2-turnip](https://github.com/bmdhacks/armsx2-turnip)
 at the commit `meson.build` pins (`mesa_commit`). Only the sources are used;
 this repository's `mesa-glue/` builds the parts the driver needs.
 
@@ -36,7 +36,7 @@ Android (arm64, API level 29) is a cross build with the NDK r28c at
 
     meson setup build-android --cross-file cross/android-aarch64.ini
     ninja -C build-android
-    llvm-strip -o libvulkan_armsx2_mali.so build-android/src/libvulkan_mali.so
+    llvm-strip -o libvulkan_malisx2.so build-android/src/libvulkan_malisx2.so
 
 The result is a Vulkan HAL module (`HMI`) with 16 KiB-aligned segments,
 needing only `libc`, `libm`, `libdl` and `liblog`. ARMSX2 loads it as an
@@ -44,8 +44,8 @@ adrenotools driver pack: the library plus a `meta.json` in a zip.
 
 ## Measurement
 
-`LIBMALI_MEASURE=timing` (or `draws`, `csf`, `both`, `shaders`; on Android
-the property `debug.libmali.measure`) makes the driver write GPU timestamps
+`MALISX2_MEASURE=timing` (or `draws`, `csf`, `both`, `shaders`; on Android
+the property `debug.malisx2.measure`) makes the driver write GPU timestamps
 per render pass, dispatch and draw, captures of the submitted command
 streams, or the shaders it compiles.
 

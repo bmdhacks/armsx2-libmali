@@ -962,9 +962,9 @@ MALI_PER_ARCH(CmdBeginRendering)(VkCommandBuffer commandBuffer, const VkRenderin
    bool bound = false;
 
    if (info->flags & (VK_RENDERING_SUSPENDING_BIT | VK_RENDERING_RESUMING_BIT))
-      vk_logw(VK_LOG_OBJS(cmd), "libmali: suspended/resumed rendering is not supported");
+      vk_logw(VK_LOG_OBJS(cmd), "malisx2: suspended/resumed rendering is not supported");
    if (info->viewMask)
-      vk_logw(VK_LOG_OBJS(cmd), "libmali: multiview rendering is not supported");
+      vk_logw(VK_LOG_OBJS(cmd), "malisx2: multiview rendering is not supported");
 
    assert(info->colorAttachmentCount <= MALI_MAX_RTS);
    for (uint32_t i = 0; i < info->colorAttachmentCount; i++) {
@@ -973,7 +973,7 @@ MALI_PER_ARCH(CmdBeginRendering)(VkCommandBuffer commandBuffer, const VkRenderin
       if (!view)
          continue;
       if (view->vk.image->samples > 1)
-         vk_logw(VK_LOG_OBJS(cmd), "libmali: multisampled attachments are not supported");
+         vk_logw(VK_LOG_OBJS(cmd), "malisx2: multisampled attachments are not supported");
       set_target(&d.rt[i], view, 0, vk_format_to_pipe_format(view->vk.view_format), att);
       d.clear_color[i] = att->clearValue.color;
       w = MIN2(w, view->vk.extent.width);

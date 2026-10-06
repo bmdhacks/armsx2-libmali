@@ -131,7 +131,7 @@ dispatch_copy(struct mali_cmd_buffer *cmd, const struct copy_surface *src, int s
       return;
    const unsigned bytes = src->block_bytes;
    if (!util_is_power_of_two_nonzero(bytes) || bytes > 16) {
-      vk_logw(VK_LOG_OBJS(cmd), "libmali: copies of %u-byte blocks are not supported", bytes);
+      vk_logw(VK_LOG_OBJS(cmd), "malisx2: copies of %u-byte blocks are not supported", bytes);
       return;
    }
    const struct mali_shader *s = MALI_PER_ARCH(meta_copy_get)(cmd, util_logbase2(bytes));
@@ -676,7 +676,7 @@ MALI_PER_ARCH(CmdBlitImage2)(VkCommandBuffer commandBuffer, const VkBlitImageInf
    for (uint32_t i = 0; i < info->regionCount; i++) {
       const VkImageBlit2 *r = &info->pRegions[i];
       if (!(r->dstSubresource.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT)) {
-         vk_logw(VK_LOG_OBJS(cmd), "libmali: depth/stencil blits are not supported");
+         vk_logw(VK_LOG_OBJS(cmd), "malisx2: depth/stencil blits are not supported");
          continue;
       }
       const unsigned slevel = r->srcSubresource.mipLevel;

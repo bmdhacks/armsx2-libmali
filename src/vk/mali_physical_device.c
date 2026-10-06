@@ -41,7 +41,7 @@
  * commit here would empty the cache on every driver update. The commit is
  * logged when the physical device is created instead. */
 #define MALI_DRIVER_INFO \
-   "v1.r44p1-libmali." MALI_VERSION_STRING ".s" MALI_SHADER_CACHE_ID_SHORT
+   "v1.r44p1-malisx2." MALI_VERSION_STRING ".s" MALI_SHADER_CACHE_ID_SHORT
 
 /*
  * What identity the G57 build (arch 9) reports to ARMSX2: the
@@ -56,7 +56,7 @@
 #define MALI_V9_DRIVER_VERSION MALI_DRIVER_VERSION
 /* The same scheme, ending in the v9 build's own shader cache ID. */
 #define MALI_V9_DRIVER_INFO \
-   "v1.r44p1-libmali." MALI_VERSION_STRING ".s" MALI_SHADER_CACHE_ID_V9_SHORT
+   "v1.r44p1-malisx2." MALI_VERSION_STRING ".s" MALI_SHADER_CACHE_ID_V9_SHORT
 
 /* Arch the driver was built for (meson.build pan_arch). */
 #ifndef MALI_PAN_ARCH
@@ -70,7 +70,7 @@ static const struct vk_sync_type *const mali_v9_sync_types[] = { &mali_v9_sync_t
 void
 mali_kbase_log_to_vk(void *user, const char *msg)
 {
-   mesa_logw("libmali: kbase: %s", msg);
+   mesa_logw("malisx2: kbase: %s", msg);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -625,7 +625,7 @@ physical_device_create(struct mali_instance *instance, const char *path,
    if (r == MALI_KBASE_ERROR_DEVICE_NOT_FOUND)
       return VK_ERROR_INCOMPATIBLE_DRIVER;
    if (r != MALI_KBASE_SUCCESS) {
-      mesa_logw("libmali: skipping %s: %s (%s)", path, mali_kbase_result_str(r),
+      mesa_logw("malisx2: skipping %s: %s (%s)", path, mali_kbase_result_str(r),
                 log.text);
       return VK_ERROR_INCOMPATIBLE_DRIVER;
    }
@@ -650,7 +650,7 @@ physical_device_create(struct mali_instance *instance, const char *path,
       (pdev->arch == 9 && frontend == MALI_KBASE_FRONTEND_JM);
    char name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
    if (!arch_ok || !mali_device_name(&pdev->props, name, sizeof(name))) {
-      mesa_logw("libmali: skipping %s: GPU product 0x%04x (arch %u) is not "
+      mesa_logw("malisx2: skipping %s: GPU product 0x%04x (arch %u) is not "
                 "one this driver was built for (arch %u)", path,
                 pdev->props.product_id, pdev->props.arch_major, MALI_PAN_ARCH);
       vk_free(&instance->vk.alloc, pdev);
@@ -660,9 +660,9 @@ physical_device_create(struct mali_instance *instance, const char *path,
    pdev->timestamp_hz = timestamp_frequency();
    init_memory(pdev);
    /* driverInfo carries the shader cache ID, not the commit; say which build
-    * this is here. No "libmali:" prefix: the corpus tools count those lines
+    * this is here. No "malisx2:" prefix: the corpus tools count those lines
     * as warnings. */
-   mesa_logi("libmali build %s, driverInfo %s", MALI_GIT_SHA,
+   mesa_logi("malisx2 build %s, driverInfo %s", MALI_GIT_SHA,
             pdev->arch == 9 ? MALI_V9_DRIVER_INFO : MALI_DRIVER_INFO);
 
    struct vk_features features;

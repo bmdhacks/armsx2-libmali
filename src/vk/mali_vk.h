@@ -195,7 +195,7 @@ struct mali_device {
    void *fe;
 
    /* Timing and command-stream capture (src/measurement/); NULL unless
-    * LIBMALI_MEASURE or debug.libmali.measure turns them on. */
+    * MALISX2_MEASURE or debug.malisx2.measure turns them on. */
    struct mali_measure *measure;
 
    /* Interned byte strings (mali_device_intern_key): small ids that

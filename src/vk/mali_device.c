@@ -307,7 +307,7 @@ mali_CreateDevice(VkPhysicalDevice physicalDevice,
       device_destroy(dev, pAllocator);
       return result;
    }
-   /* Timing and capture, when LIBMALI_MEASURE asks for them. */
+   /* Timing and capture, when MALISX2_MEASURE asks for them. */
    mali_measure_init(dev);
 
    const struct vk_pipeline_cache_create_info mem_cache_info = {

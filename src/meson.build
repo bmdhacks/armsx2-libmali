@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 
-inc_libmali = include_directories('.')
+inc_malisx2 = include_directories('.')
 
-libmali_c_args = cc.get_supported_arguments([
+malisx2_c_args = cc.get_supported_arguments([
   '-Werror=implicit-function-declaration',
   '-Werror=missing-prototypes',
   '-Werror=return-type',
@@ -28,11 +28,11 @@ mali_kraid_support_h = custom_target(
   depend_files : nir_depends,
 )
 
-libmali_compiler = static_library(
+malisx2_compiler = static_library(
   'mali_compiler',
   files('compiler/mali_compiler.c'), mali_kraid_support_h,
   include_directories : [inc_include, inc_src, inc_panfrost],
-  c_args : [pre_args, libmali_c_args],
+  c_args : [pre_args, malisx2_c_args],
   dependencies : [idep_vtn, idep_nir, idep_mesautil, idep_valhall_enums_h,
                   idep_bi_opcodes_h, libpanfrost_model_dep],
   link_with : [libpanfrost_compiler],
@@ -41,7 +41,7 @@ libmali_compiler = static_library(
 
 _kraid_wrap = '-Wl,--wrap=kraid_compile_nir'
 idep_mali_compiler = declare_dependency(
-  link_with : libmali_compiler,
+  link_with : malisx2_compiler,
   include_directories : [include_directories('compiler'), inc_panfrost],
   dependencies : [idep_nir, idep_vtn, idep_mesautil, idep_valhall_enums_h,
                   idep_bi_opcodes_h, libpanfrost_model_dep],
@@ -53,17 +53,17 @@ idep_mali_compiler = declare_dependency(
 # csf.c's CSF frontend; both are compiled in unconditionally (the frontend
 # is a runtime choice, mali_kbase_create) but only one is ever called on a
 # given context.
-libmali_kbase = static_library(
+malisx2_kbase = static_library(
   'mali_kbase',
   files('kbase/cache.c', 'kbase/context.c', 'kbase/csf.c', 'kbase/device.c',
         'kbase/jm.c', 'kbase/kcpu.c', 'kbase/mem.c', 'kbase/props.c'),
-  c_args : [pre_args, libmali_c_args],
+  c_args : [pre_args, malisx2_c_args],
   gnu_symbol_visibility : 'hidden',
 )
 
 idep_mali_kbase = declare_dependency(
-  link_with : libmali_kbase,
-  include_directories : inc_libmali,
+  link_with : malisx2_kbase,
+  include_directories : inc_malisx2,
 )
 
 # The Vulkan front half: our entry points
@@ -125,7 +125,7 @@ mali_shader_cache_id_h = custom_target(
 )
 
 _vk_c_args = [
-  pre_args, libmali_c_args,
+  pre_args, malisx2_c_args,
   '-DMALI_PAN_ARCH=@0@'.format(pan_arch),
   '-DMALI_VERSION_STRING="@0@"'.format(meson.project_version()),
 ]
@@ -145,7 +145,7 @@ _vk_per_arch_files = files(
   'vk/mali_image_view.c', 'vk/mali_pipeline.c', 'vk/mali_pipeline_state.c',
   'vk/mali_sampler.c', 'vk/mali_shader.c',
 )
-_vk_inc = [inc_include, inc_src, inc_libmali, include_directories('vk'),
+_vk_inc = [inc_include, inc_src, inc_malisx2, include_directories('vk'),
            include_directories('measurement')]
 _vk_per_arch_deps = [idep_vulkan_lite_runtime_headers, idep_vulkan_util_headers,
                      idep_mesautil, idep_nir_headers, idep_mali_compiler]
@@ -153,7 +153,7 @@ _vk_per_arch_deps = [idep_vulkan_lite_runtime_headers, idep_vulkan_util_headers,
 # Everything of the front half except the per-arch files and what the waist
 # stubs do when called (mali_waist.c), which the driver and the tests pick
 # separately. The command-stream (CSF) back half here is the v11 one.
-libmali_vk = static_library(
+malisx2_vk = static_library(
   'mali_vk',
   files('vk/mali_device.c', 'vk/mali_icd.c', 'vk/mali_instance.c',
         'vk/mali_physical_device.c'),
@@ -172,10 +172,10 @@ libmali_vk = static_library(
   # Sync files and the Android window system; mali_android.c only on Android.
   files('vk/mali_sync_file.c', 'vk/mali_wsi.c'),
   with_platform_android ? files('vk/mali_android.c') : [],
-  # Timing and command-stream capture (LIBMALI_MEASURE).
+  # Timing and command-stream capture (MALISX2_MEASURE).
   files('measurement/config.c', 'measurement/recorder.c', 'measurement/timing.c'),
   mali_entrypoints, mali_waist_stubs, mali_version_h, mali_shader_cache_id_h,
-  include_directories : [inc_include, inc_src, inc_libmali, include_directories('vk'),
+  include_directories : [inc_include, inc_src, inc_malisx2, include_directories('vk'),
                          include_directories('measurement')],
   c_args : _vk_c_args,
   dependencies : [idep_vulkan_lite_runtime_headers, idep_vulkan_util_headers,
@@ -185,12 +185,12 @@ libmali_vk = static_library(
 )
 
 # The per-arch files at v11, for the G615 (mali_v11_*).
-libmali_vk_v11 = static_library(
+malisx2_vk_v11 = static_library(
   'mali_vk_v11',
   _vk_per_arch_files,
-  mali_entrypoints[0],   # the header only; the tables are libmali_vk's
+  mali_entrypoints[0],   # the header only; the tables are malisx2_vk's
   include_directories : _vk_inc,
-  c_args : [pre_args, libmali_c_args, '-DPAN_ARCH=11', '-DMALI_PAN_ARCH=11'],
+  c_args : [pre_args, malisx2_c_args, '-DPAN_ARCH=11', '-DMALI_PAN_ARCH=11'],
   dependencies : [_vk_per_arch_deps, idep_pan_format_by_arch['11'],
                   idep_pan_packers_by_arch['11']],
   gnu_symbol_visibility : 'hidden',
@@ -198,24 +198,24 @@ libmali_vk_v11 = static_library(
 
 # The job-manager (v9, Mali-G57) back half: its queue, submit and sync
 # files, mali_sync.c and mali_wsi.c a second time, and the per-arch files,
-# at PAN_ARCH 9. Linked into the driver next to libmali_vk; the device's
+# at PAN_ARCH 9. Linked into the driver next to malisx2_vk; the device's
 # arch picks which back half a VkDevice uses (mali_device.c).
-libmali_vk_v9 = static_library(
+malisx2_vk_v9 = static_library(
   'mali_vk_v9',
   files('vk/mali_jm_cmd_buffer.c', 'vk/mali_jm_cmd_dispatch.c', 'vk/mali_jm_cmd_draw.c',
         'vk/mali_jm_cmd_render.c', 'vk/mali_jm_heap.c', 'vk/mali_jm_query.c',
         'vk/mali_jm_queue.c', 'vk/mali_jm_sync_file.c', 'vk/mali_sync.c', 'vk/mali_wsi.c'),
-  # Timing and command-stream capture on the job manager (LIBMALI_MEASURE):
+  # Timing and command-stream capture on the job manager (MALISX2_MEASURE):
   # their own implementation of what touches struct mali_cmd_buffer
   # directly, because that struct (mali_jm.h) differs from the CSF one
   # timing.c/recorder.c are compiled against; the device-level
   # configuration, output writers and mali_measure_harvest/collect in those
-  # two files (built once, in libmali_vk) are shared.
+  # two files (built once, in malisx2_vk) are shared.
   files('measurement/timing_jm.c', 'measurement/recorder_jm.c'),
   _vk_per_arch_files,
-  mali_entrypoints[0],   # the header only; the tables are libmali_vk's
+  mali_entrypoints[0],   # the header only; the tables are malisx2_vk's
   include_directories : _vk_inc,
-  c_args : [pre_args, libmali_c_args, '-DPAN_ARCH=9',
+  c_args : [pre_args, malisx2_c_args, '-DPAN_ARCH=9',
             '-DMALI_VERSION_STRING="@0@"'.format(meson.project_version())],
   dependencies : [_vk_per_arch_deps, idep_pan_format_by_arch['9'],
                   idep_pan_packers_by_arch['9']],
@@ -237,28 +237,28 @@ endforeach
 # For the driver .so and the tests: the front half, the runtime, kbase, the
 # compiler. The waist behaviour is added by the user of the dependency.
 idep_mali_vk = declare_dependency(
-  link_whole : [libmali_vk, libmali_vk_v11, libmali_vk_v9],
-  link_with : [libmali_kbase, libpanfrost_pixel_format_by_arch['11'],
+  link_whole : [malisx2_vk, malisx2_vk_v11, malisx2_vk_v9],
+  link_with : [malisx2_kbase, libpanfrost_pixel_format_by_arch['11'],
                libpanfrost_pixel_format_by_arch['9']],
   sources : [mali_entrypoints[0]],
-  include_directories : [inc_libmali, include_directories('vk'),
+  include_directories : [inc_malisx2, include_directories('vk'),
                          include_directories('measurement')],
   dependencies : [idep_vulkan_runtime, idep_vulkan_util, idep_mesautil,
                   idep_mali_compiler, idep_pan_packers],
 )
-libmali_waist = _waist_variants[get_option('measurement').to_string()]
-libmali_waist_log = _waist_variants['false']
-libmali_waist_abort = _waist_variants['true']
+malisx2_waist = _waist_variants[get_option('measurement').to_string()]
+malisx2_waist_log = _waist_variants['false']
+malisx2_waist_abort = _waist_variants['true']
 
 # The driver. Everything is hidden except the loader entry points listed in
 # the version script; PT_LOAD segments are aligned for 16 KB pages. The
 # build ID feeds the pipeline cache UUID.
 # Android also exports HMI, the HAL module the Android loader opens.
 _icd_sym = files(with_platform_android ? 'vk/mali_icd_android.sym' : 'vk/mali_icd.sym')
-libvulkan_mali = shared_library(
-  'vulkan_mali',
+libvulkan_malisx2 = shared_library(
+  'vulkan_malisx2',
   dependencies : [idep_mali_vk],
-  link_whole : [libmali_compiler, libmali_waist],
+  link_whole : [malisx2_compiler, malisx2_waist],
   link_args : [
     '-Wl,--version-script=@0@'.format(_icd_sym[0].full_path()),
     '-Wl,-z,max-page-size=16384',
@@ -273,14 +273,14 @@ libvulkan_mali = shared_library(
 #   VK_DRIVER_FILES=<builddir>/mali_devenv_icd.json
 # (or `meson devenv -C <builddir>`, which sets it).
 _icd_conf = configuration_data()
-_icd_conf.set('LIBRARY_PATH', libvulkan_mali.full_path())
+_icd_conf.set('LIBRARY_PATH', libvulkan_malisx2.full_path())
 mali_devenv_icd = configure_file(
   input : '../mali_icd.json.in',
   output : 'mali_devenv_icd.json',
   configuration : _icd_conf,
 )
 _icd_conf_installed = configuration_data()
-_icd_conf_installed.set('LIBRARY_PATH', 'libvulkan_mali.so')
+_icd_conf_installed.set('LIBRARY_PATH', 'libvulkan_malisx2.so')
 configure_file(
   input : '../mali_icd.json.in',
   output : 'mali_icd.@0@.json'.format(host_machine.cpu_family()),

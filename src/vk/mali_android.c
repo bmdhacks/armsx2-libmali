@@ -35,7 +35,7 @@
 #include "mali_wsi.h"
 
 #define wsi_errorf(obj, result, ...)                                            \
-   (mesa_loge("libmali: WSI: " __VA_ARGS__), vk_errorf(obj, result, __VA_ARGS__))
+   (mesa_loge("malisx2: WSI: " __VA_ARGS__), vk_errorf(obj, result, __VA_ARGS__))
 
 /* ---------------------------------------------------------------------- */
 /* The HAL module                                                          */
@@ -56,7 +56,7 @@ __attribute__((visibility("default"))) struct hwvulkan_module_t HAL_MODULE_INFO_
       .module_api_version = HWVULKAN_MODULE_API_VERSION_0_1,
       .hal_api_version = HARDWARE_MAKE_API_VERSION(1, 0),
       .id = HWVULKAN_HARDWARE_MODULE_ID,
-      .name = "libmali Vulkan driver (kbase)",
+      .name = "malisx2 Vulkan driver (kbase)",
       .author = "ARMSX2 and bmdhacks",
       .methods = &mali_hal_methods,
    },
@@ -121,7 +121,7 @@ no_afbc_usage(void)
          if (end != buf)
             value = v;
       } else {
-         mesa_logi("libmali: ro.vendor.arm.gralloc.no_afbc_usage_flags not readable, "
+         mesa_logi("malisx2: ro.vendor.arm.gralloc.no_afbc_usage_flags not readable, "
                    "using 0x%llx", (unsigned long long)value);
       }
       known = true;
@@ -202,7 +202,7 @@ mali_android_bind_native_buffer(struct mali_device *dev, struct mali_image *imag
       return mali_wsi_image_bind_buffer(dev, image, fd, (uint32_t)nb->stride, alloc);
 
    /* No name to go by (/proc not readable?): the one kbase can import. */
-   mesa_logw("libmali: WSI: no fd of the native buffer is named as a dma-buf; "
+   mesa_logw("malisx2: WSI: no fd of the native buffer is named as a dma-buf; "
              "trying to import each of its %d fds", nb->handle->numFds);
    VkResult result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
    for (int i = 0; i < nb->handle->numFds && result != VK_SUCCESS; i++)

@@ -73,7 +73,7 @@ slot_alloc(struct mali_jm_device *jd, struct mali_kbase_bo *bo)
       .mem_class = MALI_KBASE_MEM_CLASS_DEVICE_TRANSIENT,
    };
    if (mali_kbase_alloc(jd->kb, &ai, bo) != MALI_KBASE_SUCCESS) {
-      mesa_loge("libmali: the tiler heap region (%llu MiB of VA) could not be allocated",
+      mesa_loge("malisx2: the tiler heap region (%llu MiB of VA) could not be allocated",
                 (unsigned long long)(MALI_JM_HEAP_SLOT_SIZE >> 20));
       return false;
    }

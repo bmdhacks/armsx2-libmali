@@ -4,7 +4,7 @@
  */
 
 /*
- * Job-manager command-stream capture: LIBMALI_MEASURE's "csf" mode keeps
+ * Job-manager command-stream capture: MALISX2_MEASURE's "csf" mode keeps
  * that name on a v9 device too -- job-manager capture is a mode of the
  * same knob, not a second one. One file per captured vkQueueSubmit,
  * jm-SSSSSSSS.bin (S = submit number):
@@ -189,7 +189,7 @@ mali_jm_measure_capture_end(struct mali_device *dev, struct mali_jm_measure_capt
       mali_measure_add_capture(m, name, cap->seqno, bytes);
    } else {
       if (!m->write_failed)
-         mesa_loge("libmali: measurement: cannot write %s", path);
+         mesa_loge("malisx2: measurement: cannot write %s", path);
       m->write_failed = true;
    }
    pthread_mutex_unlock(&m->lock);

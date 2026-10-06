@@ -244,7 +244,7 @@ mali_sync_file_finish(struct mali_csf_device *csf)
     * waits are cancelled, the sync files it created signal). */
    mali_kbase_kcpu_queue_destroy(csf->kb, k->id);
    if (k->stats.waits || k->stats.exports)
-      mesa_logi("libmali: kcpu queue: %llu sync-file waits, %llu sync files created",
+      mesa_logi("malisx2: kcpu queue: %llu sync-file waits, %llu sync files created",
                 (unsigned long long)k->stats.waits, (unsigned long long)k->stats.exports);
    vk_free(&csf->dev->vk.alloc, k);
 }
