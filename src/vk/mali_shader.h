@@ -336,6 +336,14 @@ struct mali_shader_compile_info {
    bool meta;
 };
 
+/* The fragment shader keeps its second colour output (location 0,
+ * index 1): dualSrcBlend is enabled and some colour attachment blends
+ * with a SRC1 factor, or the blend equations are dynamic. Otherwise the
+ * output is dropped before compiling. Part of the shader's cache key. */
+MALI_PER_ARCH_DECL(bool, shader_fs_keeps_dual_source,
+                   (const struct mali_device *dev,
+                    const struct vk_graphics_pipeline_state *state));
+
 /* The generic lowering that depends only on the shader and the GPU
  * (panvk_preprocess_nir); run on the NIR from vtn before
  * mali_shader_compile. */

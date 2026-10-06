@@ -856,11 +856,40 @@ lower_nir_io(nir_shader *nir)
    pan_nir_lower_mediump_io(nir);
 }
 
+static bool
+is_src1_factor(VkBlendFactor f)
+{
+   return f == VK_BLEND_FACTOR_SRC1_COLOR || f == VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR ||
+          f == VK_BLEND_FACTOR_SRC1_ALPHA || f == VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
+}
+
+bool
+MALI_PER_ARCH(shader_fs_keeps_dual_source)(const struct mali_device *dev,
+                                           const struct vk_graphics_pipeline_state *state)
+{
+   if (!dev->vk.enabled_features.dualSrcBlend || !state || !state->cb)
+      return false;
+   if (BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) ||
+       BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_CB_BLEND_EQUATIONS))
+      return true;
+   for (uint32_t i = 0; i < state->cb->attachment_count; i++) {
+      const struct vk_color_blend_attachment_state *a = &state->cb->attachments[i];
+      if (a->blend_enable &&
+          (is_src1_factor(a->src_color_blend_factor) ||
+           is_src1_factor(a->dst_color_blend_factor) ||
+           is_src1_factor(a->src_alpha_blend_factor) ||
+           is_src1_factor(a->dst_alpha_blend_factor)))
+         return true;
+   }
+   return false;
+}
+
 /*
- * The device does not report dualSrcBlend, so no pipeline can use a SRC1
- * blend factor and a fragment shader's second colour output (index 1) is
- * never read. ARMSX2 writes one in nearly every TFX shader; kept, it costs
- * its own arithmetic and the moves that put it in r4-r7 for a blend shader.
+ * A fragment shader's second colour output (index 1) is read only by the
+ * blend shader of a target that blends with a SRC1 factor. ARMSX2 writes
+ * one in nearly every TFX shader; kept, it costs its own arithmetic and
+ * the moves that put it in r4-r7, so it is dropped unless the pipeline's
+ * blend state uses it (shader_fs_keeps_dual_source).
  */
 static bool
 drop_dual_source_output(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
@@ -1566,8 +1595,8 @@ MALI_PER_ARCH(shader_compile)(struct mali_device *dev,
 
       nir_assign_io_var_locations(nir, nir_var_shader_out);
       lower_nir_io(nir);
-      assert(!dev->vk.enabled_features.dualSrcBlend);
-      if (nir_shader_intrinsics_pass(nir, drop_dual_source_output,
+      if (!MALI_PER_ARCH(shader_fs_keeps_dual_source)(dev, state) &&
+          nir_shader_intrinsics_pass(nir, drop_dual_source_output,
                                      nir_metadata_control_flow, NULL)) {
          nir->info.fs.color_is_dual_source = false;
          NIR_PASS(_, nir, nir_opt_dce);

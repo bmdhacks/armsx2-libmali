@@ -395,7 +395,8 @@ baked_words_use_dynamic_state(const BITSET_WORD *dynamic)
 
 /* The graphics state the fragment lowering reads. */
 static void
-hash_fs_state(struct mesa_blake3 *ctx, const struct vk_graphics_pipeline_state *state)
+hash_fs_state(struct mesa_blake3 *ctx, const struct mali_device *dev,
+              const struct vk_graphics_pipeline_state *state)
 {
    bool sample_shading = state->ms && state->ms->sample_shading_enable;
    uint32_t view_mask = state->mv ? state->mv->view_mask : 0;
@@ -403,10 +404,13 @@ hash_fs_state(struct mesa_blake3 *ctx, const struct vk_graphics_pipeline_state *
    bool a2c = BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_ALPHA_TO_COVERAGE_ENABLE) ||
               (state->ms && state->ms->alpha_to_coverage_enable);
    uint32_t roa = state->rasterization_order_access;
+   /* Whether it keeps its second colour output. */
+   bool dual_src = MALI_PER_ARCH(shader_fs_keeps_dual_source)(dev, state);
    _mesa_blake3_update(ctx, &sample_shading, sizeof(sample_shading));
    _mesa_blake3_update(ctx, &view_mask, sizeof(view_mask));
    _mesa_blake3_update(ctx, &a2c, sizeof(a2c));
    _mesa_blake3_update(ctx, &roa, sizeof(roa));
+   _mesa_blake3_update(ctx, &dual_src, sizeof(dual_src));
    if (state->ial)
       _mesa_blake3_update(ctx, state->ial, sizeof(*state->ial));
    if (state->cal)
@@ -621,7 +625,7 @@ create_graphics_pipeline(struct mali_device *dev, VkPipelineCache cache_handle,
       _mesa_blake3_update(&h, fs->stage_hash, sizeof(fs->stage_hash));
       hash_layout(&h, layout);
       _mesa_blake3_update(&h, vs->stage_hash, sizeof(vs->stage_hash));
-      hash_fs_state(&h, &state);
+      hash_fs_state(&h, dev, &state);
       _mesa_blake3_final(&h, fs->key);
    }
 

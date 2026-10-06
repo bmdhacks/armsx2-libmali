@@ -245,6 +245,25 @@ device_extensions_for_arch(uint32_t arch)
 }
 
 /*
+ * Dual-source blending. Neither arch has a second-source operand in the
+ * fixed-function blender: a render target whose equation uses a SRC1
+ * factor runs a blend shader, and only pipelines with such an equation
+ * keep the fragment shader's second colour output (mali_shader.c).
+ */
+static bool
+dual_src_blend_for_arch(uint32_t arch)
+{
+   switch (arch) {
+   case 9:
+      return true;
+   case 11:
+      return true;
+   default:
+      return false;
+   }
+}
+
+/*
  * The features we intend to implement for ARMSX2 on this GPU, not the
  * blob's full list. Values that decide ARMSX2's paths follow the blob
  * where we can back them.
@@ -261,7 +280,7 @@ get_features(struct vk_features *f, uint32_t arch)
       .geometryShader = false,        /* blob: true; no GS in our compiler */
       .tessellationShader = false,
       .sampleRateShading = true,
-      .dualSrcBlend = false,          /* as the blob; ARMSX2 measured so */
+      .dualSrcBlend = dual_src_blend_for_arch(arch),
       .logicOp = false,
       .multiDrawIndirect = false,
       .drawIndirectFirstInstance = false,
@@ -524,7 +543,8 @@ get_properties(const struct mali_physical_device *pdev, const char *name,
       .maxVertexOutputComponents = 128,
       .maxFragmentInputComponents = 128,
       .maxFragmentOutputAttachments = 8,
-      .maxFragmentDualSrcAttachments = 0,
+      /* kraid takes one second colour per shader (location 0). */
+      .maxFragmentDualSrcAttachments = dual_src_blend_for_arch(pdev->arch) ? 1 : 0,
       .maxFragmentCombinedOutputResources = 8 + (1u << 12) + (1u << 8),
 
       /* Vulkan 1.1 */

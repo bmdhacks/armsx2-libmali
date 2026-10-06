@@ -53,12 +53,13 @@ MALI_PER_ARCH_DECL(void, blend_shader_key_init,
                     unsigned rt, enum pipe_format format, unsigned samples,
                     const struct pan_shader_info *fs_info));
 
-/* Compiles the blend shaders a new pipeline's static state asks for, so
- * that its first draw finds them in the cache (the blob builds them at
- * pipeline creation too). A failure is left for the draw to report. */
+/* Compiles the blend shaders a new pipeline's static state asks for and
+ * keeps their addresses in p->blend_shader, so that its draws need no
+ * cache lookup (the blob builds them at pipeline creation too). A failure
+ * is left for the draw to report. */
 struct mali_graphics_pipeline;
 MALI_PER_ARCH_DECL(void, blend_shaders_prepare,
-                   (struct mali_device *dev, const struct mali_graphics_pipeline *p));
+                   (struct mali_device *dev, struct mali_graphics_pipeline *p));
 
 /* The blend shader for `key` in NIR (exposed for the host test). */
 MALI_PER_ARCH_DECL(nir_shader *, blend_shader_nir, (const struct mali_blend_shader_key *key));

@@ -189,6 +189,17 @@ struct mali_graphics_pipeline {
    struct vk_render_pass_state rp;
 
    struct mali_gfx_baked baked;
+
+   /* The blend shaders of the static blend state, compiled at creation
+    * (mali_blend.c blend_shaders_prepare), per render target in shader
+    * mode, with the target format and sample count they were built for.
+    * A draw into a matching target takes the address from here instead
+    * of the device's cache; addr 0 means none. */
+   struct {
+      uint64_t addr;
+      uint32_t format;        /* enum pipe_format */
+      uint32_t samples;
+   } blend_shader[MALI_MAX_RTS];
 };
 
 struct mali_compute_pipeline {
