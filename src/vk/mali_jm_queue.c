@@ -13,20 +13,32 @@
  * (mali_jm.h has the per-batch inputs):
  *
  *   vtc(b):  slot 1, core_req CS|T|CF|COHERENT_GROUP
- *            pre_dep[0] ORDER on the previous atom in slot 1's order
- *            pre_dep[1] ORDER on the newest fragment-slot atom it has to
- *                       wait for: the batch's vtc_after_frag (or a
- *                       barrier at the end of an earlier command buffer,
+ *            pre_dep[0] the previous atom in slot 1's order
+ *            pre_dep[1] the newest fragment-slot atom it has to wait for:
+ *                       the batch's vtc_after_frag (or a barrier at the
+ *                       end of an earlier command buffer,
  *                       mali_jm_cmd::end_req), the last fragment reader of
  *                       its tiler heap slot, and (first vtc atom of a
  *                       submission) semaphore waits whose destination
  *                       stages include vtc-slot stages
  *   frag(b): slot 0, core_req FS, one per fragment segment
- *            pre_dep[0] DATA on vtc(b) (or, with frag_after_vtc and no vtc
- *                       chain, on the newest vtc-slot atom)
- *            pre_dep[1] ORDER on the previous atom in slot 0's order
+ *            pre_dep[0] vtc(b) (or, with frag_after_vtc and no vtc chain,
+ *                       the newest vtc-slot atom)
+ *            pre_dep[1] the previous atom in slot 0's order
  *
- * Every atom ORDER-follows its slot's previous one, so each slot runs in
+ * Every dependency is DATA except one on a FENCE_WAIT atom, which is
+ * ORDER (dep_type). With DATA the kernel fails an atom whose dependency
+ * failed, with the same event code, without running it, so a GPU fault
+ * travels along the graph: to the submission's tracker and to the
+ * FENCE_TRIGGER of a sync file exported for it, which then signals with
+ * an error instead of success. A waited sync file that signalled an
+ * error (the display's acquire fence) cancels its FENCE_WAIT, and the
+ * ORDER dependency keeps that from failing the work behind it. The one
+ * gap: a fault does not travel through a FENCE_WAIT that sits in a slot
+ * order between the faulting atom and later ones (the device is lost
+ * anyway; only that sync file's error status is missed).
+ *
+ * Every atom depends on its slot's previous one, so each slot runs in
  * submission order like a CSF ring and any "everything on slot S up to
  * here" collapses to one dependency on the newest atom of S. Waits on
  * imported sync files are FENCE_WAIT soft atoms placed into the order of
@@ -425,8 +437,8 @@ flush(struct mali_device *dev)
 static mali_jm_ref build_atom(struct mali_device *dev, enum mali_jm_atom_kind kind,
                               uint8_t slot, uint32_t core_req, uint64_t jc,
                               const struct kb_fence *fence, uint64_t udata1,
-                              mali_jm_ref dep0, uint8_t type0, mali_jm_ref dep1,
-                              uint8_t type1, unsigned reserve, VkResult *result);
+                              mali_jm_ref dep0, mali_jm_ref dep1, unsigned reserve,
+                              VkResult *result);
 
 /*
  * Make atoms[0..n) end in a non-coalesced atom that waits for all of them
@@ -453,8 +465,7 @@ make_terminal(struct mali_device *dev, bool tracker, mali_jm_ref *out)
       VkResult result = VK_SUCCESS;
       /* The number kept in reserve for exactly this (take_number). */
       t = build_atom(dev, MALI_JM_ATOM_JOIN, MALI_JM_SLOT_NONE, KB_JM_REQ_DEP, 0, NULL, 0,
-                     must[MALI_JM_SLOT_VTC], KB_JM_DEP_ORDER, must[MALI_JM_SLOT_FRAG],
-                     KB_JM_DEP_ORDER, 0, &result);
+                     must[MALI_JM_SLOT_VTC], must[MALI_JM_SLOT_FRAG], 0, &result);
       if (!t)
          return result;
       jd->stats.joins++;
@@ -513,11 +524,19 @@ take_number(struct mali_device *dev, unsigned reserve, uint8_t *num, VkResult *r
    }
 }
 
+/* The type of a dependency on in-flight atom r (file comment): DATA, so a
+ * failure reaches the dependent; ORDER on a FENCE_WAIT. */
+static uint8_t
+dep_type(const struct mali_jm_device *jd, mali_jm_ref r)
+{
+   return jd->atoms[mali_jm_ref_num(r)].kind == MALI_JM_ATOM_FENCE_WAIT ? KB_JM_DEP_ORDER
+                                                                        : KB_JM_DEP_DATA;
+}
+
 static mali_jm_ref
 build_atom(struct mali_device *dev, enum mali_jm_atom_kind kind, uint8_t slot,
            uint32_t core_req, uint64_t jc, const struct kb_fence *fence, uint64_t udata1,
-           mali_jm_ref dep0, uint8_t type0, mali_jm_ref dep1, uint8_t type1,
-           unsigned reserve, VkResult *result)
+           mali_jm_ref dep0, mali_jm_ref dep1, unsigned reserve, VkResult *result)
 {
    struct mali_jm_device *jd = dev->jm;
    struct mali_jm_build *b = jd->build;
@@ -553,14 +572,13 @@ build_atom(struct mali_device *dev, enum mali_jm_atom_kind kind, uint8_t slot,
    memset(info->cov, 0, sizeof(info->cov));
 
    const mali_jm_ref deps[2] = {dep0, dep1};
-   const uint8_t types[2] = {type0, type1};
    unsigned nd = 0;
    for (unsigned d = 0; d < 2; d++) {
       if (!mali_jm_ref_live(jd, deps[d]) || (d == 1 && deps[1] == deps[0]))
          continue;
       const struct mali_jm_atom_info *p = &jd->atoms[mali_jm_ref_num(deps[d])];
       a->pre_dep[nd].atom_id = mali_jm_ref_num(deps[d]);
-      a->pre_dep[nd].dependency_type = types[d];
+      a->pre_dep[nd].dependency_type = dep_type(jd, deps[d]);
       nd++;
       for (unsigned s = 0; s < MALI_JM_SLOT_COUNT; s++)
          info->cov[s] = newer(info->cov[s], p->cov[s]);
@@ -580,11 +598,9 @@ build_atom(struct mali_device *dev, enum mali_jm_atom_kind kind, uint8_t slot,
 mali_jm_ref
 mali_jm_build_atom(struct mali_device *dev, enum mali_jm_atom_kind kind, uint8_t slot,
                    uint32_t core_req, uint64_t jc, const struct kb_fence *fence,
-                   uint64_t udata1, mali_jm_ref dep0, uint8_t type0, mali_jm_ref dep1,
-                   uint8_t type1, VkResult *result)
+                   uint64_t udata1, mali_jm_ref dep0, mali_jm_ref dep1, VkResult *result)
 {
-   return build_atom(dev, kind, slot, core_req, jc, fence, udata1, dep0, type0, dep1, type1,
-                     1, result);
+   return build_atom(dev, kind, slot, core_req, jc, fence, udata1, dep0, dep1, 1, result);
 }
 
 unsigned
@@ -609,8 +625,7 @@ mali_jm_build_join_all(struct mali_device *dev, const mali_jm_ref *deps, unsigne
             continue;
          }
          mali_jm_ref j = mali_jm_build_atom(dev, MALI_JM_ATOM_JOIN, MALI_JM_SLOT_NONE,
-                                            KB_JM_REQ_DEP, 0, NULL, 0, live[i],
-                                            KB_JM_DEP_ORDER, live[i + 1], KB_JM_DEP_ORDER,
+                                            KB_JM_REQ_DEP, 0, NULL, 0, live[i], live[i + 1],
                                             result);
          if (!j)
             return 0;
@@ -740,9 +755,13 @@ udata_of(unsigned cmd, unsigned batch)
 }
 
 /* The atom graph of the submit's waits and command buffers (file
- * comment). With dev->lock held and the build begun. */
+ * comment). With dev->lock held and the build begun. batch_frag has room
+ * for the largest command buffer's batch count, allocated before the
+ * build so that nothing but device loss can stop it half way (the queue
+ * state it updates, q->carry included, would not match the atoms that
+ * reached the kernel). */
 static VkResult
-build_submit(struct mali_device *dev, struct vk_queue_submit *submit)
+build_submit(struct mali_device *dev, struct vk_queue_submit *submit, mali_jm_ref *batch_frag)
 {
    struct mali_jm_device *jd = dev->jm;
    struct mali_jm_queue *q = jd->queue;
@@ -763,7 +782,7 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit)
          const uint8_t slot = gate == GATE_VTC ? MALI_JM_SLOT_VTC : MALI_JM_SLOT_FRAG;
          mali_jm_ref w = mali_jm_build_atom(dev, MALI_JM_ATOM_FENCE_WAIT, slot,
                                             KB_JM_REQ_SOFT_FENCE_WAIT, 0, &f, udata_of(0, i),
-                                            q->last[slot], KB_JM_DEP_ORDER, 0, 0, &result);
+                                            q->last[slot], 0, &result);
          if (!w)
             return result;
          jd->stats.fence_waits++;
@@ -774,14 +793,22 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit)
       if (s->host_signaled || !s->submitted || q->completed_seq >= s->req[0])
          continue;
       /* Same queue: each slot is already in order behind the signalling
-       * submission; only vtc-slot work has to wait for its fragment work,
-       * which is what its tracker covers on the fragment slot. */
-      if ((gate & GATE_VTC) && mali_jm_ref_live(jd, s->req[1]))
-         frag_req = newer(frag_req, jd->atoms[mali_jm_ref_num(s->req[1])].cov[MALI_JM_SLOT_FRAG]);
+       * submission; what is left is the other slot. Vtc-slot work waits
+       * for its fragment work, which is what its tracker covers on the
+       * fragment slot. Fragment-slot work waits for its vtc work: a batch
+       * with a vtc chain has its fragment atoms depend on that, which
+       * follows the signaller's in the slot order; the first fragment atom
+       * of a batch without one is told to wait for the newest vtc atom
+       * (the carried requirement a barrier at the end of a command buffer
+       * also sets). */
+      if (!mali_jm_ref_live(jd, s->req[1]))
+         continue;
+      const struct mali_jm_atom_info *t = &jd->atoms[mali_jm_ref_num(s->req[1])];
+      if (gate & GATE_VTC)
+         frag_req = newer(frag_req, t->cov[MALI_JM_SLOT_FRAG]);
+      if ((gate & GATE_FRAG) && mali_jm_ref_live(jd, t->cov[MALI_JM_SLOT_VTC]))
+         q->carry |= MALI_JM_REQ_FRAG_AFTER_VTC;
    }
-
-   mali_jm_ref *batch_frag = NULL;
-   uint32_t batch_frag_cap = 0;
 
    for (uint32_t c = 0; c < submit->command_buffer_count; c++) {
       struct mali_cmd_buffer *cmd =
@@ -789,16 +816,6 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit)
       uint32_t count;
       const struct mali_jm_batch *batches = mali_jm_cmd_batches(cmd, &count);
       const struct mali_jm_frag_seg *segs = util_dynarray_begin(&cmd->jm.frags);
-
-      if (count > batch_frag_cap) {
-         mali_jm_ref *nb = realloc(batch_frag, count * sizeof(*nb));
-         if (!nb) {
-            free(batch_frag);
-            return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
-         }
-         batch_frag = nb;
-         batch_frag_cap = count;
-      }
 
       for (uint32_t k = 0; k < count; k++) {
          const struct mali_jm_batch *bt = &batches[k];
@@ -821,10 +838,10 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit)
             if (bt->heap_slot >= 0 && bt->heap_slot < MALI_JM_HEAP_SLOTS_MAX)
                req = newer(req, q->heap_last_frag[bt->heap_slot]);
             vtc = mali_jm_build_atom(dev, MALI_JM_ATOM_VTC, MALI_JM_SLOT_VTC, MALI_JM_REQ_VTC,
-                                     bt->vtc.first, NULL, ud, q->last[MALI_JM_SLOT_VTC],
-                                     KB_JM_DEP_ORDER, req, KB_JM_DEP_ORDER, &result);
+                                     bt->vtc.first, NULL, ud, q->last[MALI_JM_SLOT_VTC], req,
+                                     &result);
             if (!vtc)
-               goto out;
+               return result;
             frag_req = 0;
             q->carry &= ~(MALI_JM_REQ_VTC_AFTER_FRAG | MALI_JM_REQ_VTC_AFTER_FRAG_XFER);
          }
@@ -837,17 +854,11 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit)
             mali_jm_ref d = vtc;
             if (!d && (bt->frag_after_vtc || (q->carry & MALI_JM_REQ_FRAG_AFTER_VTC)))
                d = q->last[MALI_JM_SLOT_VTC];
-            /* DATA only on a hardware vtc atom: a fence wait's error must
-             * not fail the work behind it. */
-            const uint8_t type =
-               mali_jm_ref_live(jd, d) && jd->atoms[mali_jm_ref_num(d)].kind == MALI_JM_ATOM_VTC
-                  ? KB_JM_DEP_DATA
-                  : KB_JM_DEP_ORDER;
             frag = mali_jm_build_atom(dev, MALI_JM_ATOM_FRAG, MALI_JM_SLOT_FRAG,
-                                      MALI_JM_REQ_FRAG, seg->chain.first, NULL, ud, d, type,
-                                      q->last[MALI_JM_SLOT_FRAG], KB_JM_DEP_ORDER, &result);
+                                      MALI_JM_REQ_FRAG, seg->chain.first, NULL, ud, d,
+                                      q->last[MALI_JM_SLOT_FRAG], &result);
             if (!frag)
-               goto out;
+               return result;
             q->carry &= ~MALI_JM_REQ_FRAG_AFTER_VTC;
          }
          if (frag && bt->heap_slot >= 0 && bt->heap_slot < MALI_JM_HEAP_SLOTS_MAX)
@@ -861,10 +872,7 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit)
        * buffers (and submissions). */
       q->carry |= cmd->jm.end_req;
    }
-
-out:
-   free(batch_frag);
-   return result;
+   return VK_SUCCESS;
 }
 
 /*
@@ -947,8 +955,27 @@ MALI_PER_ARCH(queue_submit)(struct vk_queue *vkq, struct vk_queue_submit *submit
       jd->measure_cap = mali_jm_measure_capture_begin(dev, submit, seqno);
    }
 
+   /* The per-batch scratch of build_submit, before anything is built. */
+   uint32_t max_batches = 1;
+   for (uint32_t c = 0; c < submit->command_buffer_count; c++) {
+      uint32_t count;
+      mali_jm_cmd_batches(container_of(submit->command_buffers[c], struct mali_cmd_buffer, vk),
+                          &count);
+      max_batches = MAX2(max_batches, count);
+   }
+   mali_jm_ref *batch_frag = malloc(max_batches * sizeof(*batch_frag));
+   if (!batch_frag) {
+      if (unlikely(jd->measure_cap)) {
+         mali_jm_measure_capture_end(dev, jd->measure_cap);
+         jd->measure_cap = NULL;
+      }
+      pthread_mutex_unlock(&dev->lock);
+      return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
    mali_jm_build_begin(dev, seqno);
-   result = build_submit(dev, submit);
+   result = build_submit(dev, submit, batch_frag);
+   free(batch_frag);
    mali_jm_ref tracker = 0;
    bool built = false;
    if (result == VK_SUCCESS)
@@ -1042,9 +1069,9 @@ MALI_PER_ARCH(device_finish)(struct mali_device *dev)
    struct mali_jm_device *jd = dev->jm;
    if (!jd)
       return;
-   /* Events still queued only hold atom numbers. mali_kbase_destroy ends
-    * the context with POST_TERM; nothing here waits for the GPU (the
-    * application has, before destroying the device). */
+   /* MALI_PER_ARCH(device_quiesce) ran first: nothing is in flight, or
+    * the context was abandoned and the frees below leave memory alone.
+    * mali_kbase_destroy ends the context with POST_TERM. */
    pthread_mutex_lock(&dev->lock);
    mali_jm_drain_locked(dev);
    pthread_mutex_unlock(&dev->lock);
@@ -1056,6 +1083,55 @@ MALI_PER_ARCH(device_finish)(struct mali_device *dev)
    dev->fe = NULL;
    vk_free(&dev->vk.alloc, jd->build);
    vk_free(&dev->vk.alloc, jd);
+}
+
+void
+MALI_PER_ARCH(device_quiesce)(struct mali_device *dev)
+{
+   struct mali_jm_device *jd = dev->jm;
+   if (!jd)
+      return;
+
+   pthread_mutex_lock(&dev->lock);
+   const int64_t deadline = os_time_get_nano() + MALI_JM_TEARDOWN_WAIT_NS;
+   bool readable = true;
+   while (jd->in_flight && readable) {
+      const int64_t now = os_time_get_nano();
+      if (now >= deadline)
+         break;
+      const int ms = (int)MIN2((deadline - now + 999999) / 1000000, READER_SLICE_NS / 1000000);
+      const int r = mali_kbase_jm_poll(jd->kb, ms);
+      if (r < 0 && errno != EINTR)
+         break;
+      if (r <= 0)
+         continue;
+      /* Unlike read_events_locked, go on after a fault: a lost device's
+       * atoms still complete, and their events still come back. */
+      for (;;) {
+         struct kb_jm_event ev[MALI_JM_EVENTS_PER_READ];
+         unsigned n = 0;
+         bool terminated = false;
+         if (mali_kbase_jm_read_events(jd->kb, ev, MALI_JM_EVENTS_PER_READ, &n, &terminated) !=
+                MALI_KBASE_SUCCESS ||
+             terminated) {
+            readable = false;
+            break;
+         }
+         for (unsigned i = 0; i < n; i++)
+            process_event(dev, &ev[i]);
+         if (n < MALI_JM_EVENTS_PER_READ)
+            break;
+      }
+   }
+   const unsigned left = jd->in_flight;
+   pthread_mutex_unlock(&dev->lock);
+
+   if (left) {
+      mesa_logw("libmali: %u job-manager atoms are still in flight at device destruction; "
+                "leaving the context and its memory to the kernel until the process exits",
+                left);
+      mali_kbase_abandon(jd->kb);
+   }
 }
 
 VkResult

@@ -166,6 +166,10 @@ queue_finish(struct mali_device *dev, struct mali_queue *queue)
 static void
 device_destroy(struct mali_device *dev, const VkAllocationCallbacks *alloc)
 {
+   /* Job manager: no atom may still be running when its memory is freed
+    * below (bounded wait; mali_jm.h). */
+   if (dev->jm)
+      mali_v9_device_quiesce(dev);
    /* Reads the last results while the queue's done slots still exist. */
    mali_measure_finish(dev);
    for (uint32_t i = 0; i < dev->queue_count; i++)

@@ -227,6 +227,7 @@ struct vk_queue_submit;
 struct vk_sync_type;
 VkResult mali_v9_device_init(struct mali_device *dev);
 void mali_v9_device_finish(struct mali_device *dev);
+void mali_v9_device_quiesce(struct mali_device *dev);
 VkResult mali_v9_queue_init(struct mali_device *dev, struct mali_queue *queue);
 void mali_v9_queue_finish(struct mali_device *dev, struct mali_queue *queue);
 VkResult mali_v9_queue_submit(struct vk_queue *vkq, struct vk_queue_submit *submit);

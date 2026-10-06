@@ -23,11 +23,12 @@
  *    vtc work), and heap_slot (the tiler heap region the batch tiles into;
  *    its vtc chain waits for the region's previous user's fragment work).
  *
- * The queue's rules (mali_jm_queue.c): each atom ORDER-depends on the
- * previous atom of its slot, so each slot runs in submission order, as a
- * CSF ring does; a fragment atom DATA-depends on its batch's vtc atom; a
- * vtc atom's one other dependency is the newest fragment-slot atom it must
- * wait for. Atoms in a slot order carry EVENT_COALESCE; each JOB_SUBMIT
+ * The queue's rules (mali_jm_queue.c): each atom depends on the previous
+ * atom of its slot, so each slot runs in submission order, as a CSF ring
+ * does; a fragment atom depends on its batch's vtc atom; a vtc atom's one
+ * other dependency is the newest fragment-slot atom it must wait for.
+ * Dependencies are DATA (a fault fails what depends on it), except on a
+ * FENCE_WAIT atom (ORDER). Atoms in a slot order carry EVENT_COALESCE; each JOB_SUBMIT
  * ends in one that does not and that waits for the others, and the last
  * one of a submission (its "tracker") says "submission N and everything
  * before it is done". Completion is read on demand by whichever thread
@@ -627,6 +628,19 @@ struct mali_jm_queue {
 
 VkResult MALI_PER_ARCH(device_init)(struct mali_device *dev);
 void MALI_PER_ARCH(device_finish)(struct mali_device *dev);
+
+/*
+ * First step of device destruction, before any GPU memory is freed: read
+ * events until no atom is in flight, for at most MALI_JM_TEARDOWN_WAIT_NS.
+ * The application has waited for its work, but after device loss, or with
+ * a fence wait on a sync file that never signals, atoms can still be
+ * queued or running, and freeing memory under them would fault. Atoms
+ * still in flight after the wait cannot be stopped from user space: the
+ * kbase context is then abandoned (mali_kbase_abandon), its memory left
+ * in place until the process exits.
+ */
+void MALI_PER_ARCH(device_quiesce)(struct mali_device *dev);
+#define MALI_JM_TEARDOWN_WAIT_NS (1000ll * 1000 * 1000)
 VkResult MALI_PER_ARCH(queue_init)(struct mali_device *dev, struct mali_queue *queue);
 void MALI_PER_ARCH(queue_finish)(struct mali_device *dev, struct mali_queue *queue);
 
@@ -660,20 +674,20 @@ mali_jm_ref_live(const struct mali_jm_device *jd, mali_jm_ref r)
 void mali_jm_build_begin(struct mali_device *dev, uint64_t seq);
 
 /*
- * Add one atom. slot: the slot order it joins (MALI_JM_SLOT_*: it
- * ORDER-follows nothing by itself, the caller passes the slot's last atom
- * as a dependency) or MALI_JM_SLOT_NONE. Atoms in a slot order carry
+ * Add one atom. slot: the slot order it joins (MALI_JM_SLOT_*: it follows
+ * nothing by itself, the caller passes the slot's last atom as a
+ * dependency) or MALI_JM_SLOT_NONE. Atoms in a slot order carry
  * EVENT_COALESCE; others report their own event. deps (up to two, 0 for
- * none) are dropped when no longer in flight. For soft fence atoms, fence
- * is the base_fence the atom's jc points at (copied). Returns the atom's
- * reference, or 0 with *result set (device lost, or the kernel refused a
- * submit). May drop dev->lock to wait for atom numbers.
+ * none) are dropped when no longer in flight; each is DATA, or ORDER on a
+ * FENCE_WAIT atom (mali_jm_queue.c explains why). For soft fence atoms,
+ * fence is the base_fence the atom's jc points at (copied). Returns the
+ * atom's reference, or 0 with *result set (device lost, or the kernel
+ * refused a submit). May drop dev->lock to wait for atom numbers.
  */
 mali_jm_ref mali_jm_build_atom(struct mali_device *dev, enum mali_jm_atom_kind kind,
                                uint8_t slot, uint32_t core_req, uint64_t jc,
                                const struct kb_fence *fence, uint64_t udata1,
-                               mali_jm_ref dep0, uint8_t type0,
-                               mali_jm_ref dep1, uint8_t type1, VkResult *result);
+                               mali_jm_ref dep0, mali_jm_ref dep1, VkResult *result);
 
 /* At most two dependencies standing for all of deps[0..n) (in flight or
  * not), joining pairs with dependency-only atoms while more than two are

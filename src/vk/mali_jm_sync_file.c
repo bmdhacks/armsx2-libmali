@@ -93,8 +93,7 @@ MALI_PER_ARCH(sync_file_create)(struct mali_device *dev, uint32_t fd_count, cons
          continue;
       const struct kb_fence f = {.fd = fds[i], .stream_fd = -1};
       mali_jm_ref w = mali_jm_build_atom(dev, MALI_JM_ATOM_FENCE_WAIT, MALI_JM_SLOT_NONE,
-                                         KB_JM_REQ_SOFT_FENCE_WAIT, 0, &f, 0, 0, 0, 0, 0,
-                                         &result);
+                                         KB_JM_REQ_SOFT_FENCE_WAIT, 0, &f, 0, 0, 0, &result);
       if (w) {
          deps[nd++] = w;
          jd->stats.fence_waits++;
@@ -104,11 +103,15 @@ MALI_PER_ARCH(sync_file_create)(struct mali_device *dev, uint32_t fd_count, cons
    if (result == VK_SUCCESS)
       mali_jm_build_join_all(dev, deps, nd, dep, &result);
    if (result == VK_SUCCESS) {
-      /* The kernel writes the new sync file's fd here during JOB_SUBMIT. */
+      /* The kernel writes the new sync file's fd here during JOB_SUBMIT.
+       * Its dependency on the submission's tracker is DATA (directly or
+       * through join atoms): if the GPU work faulted, the kernel fails the
+       * trigger with the same code and the sync file signals with an
+       * error. On the sync files it waits for it is ORDER: an error there
+       * is the other side's and is not passed on. */
       const struct kb_fence f = {.fd = -1, .stream_fd = stream_fd};
       if (mali_jm_build_atom(dev, MALI_JM_ATOM_FENCE_TRIGGER, MALI_JM_SLOT_NONE,
-                             KB_JM_REQ_SOFT_FENCE_TRIGGER, 0, &f, 0, dep[0], KB_JM_DEP_ORDER,
-                             dep[1], KB_JM_DEP_ORDER, &result))
+                             KB_JM_REQ_SOFT_FENCE_TRIGGER, 0, &f, 0, dep[0], dep[1], &result))
          jd->stats.fence_triggers++;
    }
    free(deps);
