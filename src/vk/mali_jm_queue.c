@@ -172,6 +172,21 @@ atom_kind_name(unsigned kind)
 /* ---------------------------------------------------------------------- */
 /* Events                                                                  */
 
+/* With dev->lock held. The event code is all the kernel tells us about a
+ * job fault: no fault address or status reaches userspace on the job
+ * manager. */
+static void
+record_fault(struct mali_device *dev, const struct kb_jm_event *ev, const char *what)
+{
+   struct mali_device_fault f = {
+      .address_type = VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT,
+      .code = ev->event_code,
+      .data = ev->atom_number,
+   };
+   snprintf(f.what, sizeof(f.what), "%s", what);
+   mali_device_record_fault(dev, &f);
+}
+
 static void
 process_event(struct mali_device *dev, const struct kb_jm_event *ev)
 {
@@ -181,6 +196,7 @@ process_event(struct mali_device *dev, const struct kb_jm_event *ev)
    dev->stats.kernel_events++;
 
    if (n == 0 || ev->event_code == KB_JM_EVENT_DRV_TERMINATED) {
+      record_fault(dev, ev, "the kernel ended the job-manager context");
       jm_set_fault(jd, "the kernel ended the job-manager context (event 0x%x)",
                    ev->event_code);
       return;
@@ -206,6 +222,11 @@ process_event(struct mali_device *dev, const struct kb_jm_event *ev)
          mesa_logw("malisx2: a waited sync file signalled an error (submission %llu); "
                    "continuing", (unsigned long long)ev->udata[0]);
       } else {
+         char what[VK_MAX_DESCRIPTION_SIZE];
+         snprintf(what, sizeof(what), "%s: %s atom %u (submission %llu)",
+                  event_code_name(ev->event_code), atom_kind_name(kind), n,
+                  (unsigned long long)ev->udata[0]);
+         record_fault(dev, ev, what);
          jm_set_fault(jd,
                       "%s atom %u (submission %llu, command buffer %u, batch %u) "
                       "completed with 0x%x (%s)",

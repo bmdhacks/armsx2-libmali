@@ -345,3 +345,61 @@ mali_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
       return;
    device_destroy(dev, pAllocator);
 }
+
+/*
+ * VK_EXT_device_fault. The description is the message the device was lost
+ * with; the address and vendor records come from the first fault the
+ * kernel described (mali_device_record_fault). Both are kept after they
+ * are read. No vendor binary.
+ */
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_GetDeviceFaultInfoEXT(VkDevice _device, VkDeviceFaultCountsEXT *pFaultCounts,
+                           VkDeviceFaultInfoEXT *pFaultInfo)
+{
+   VK_FROM_HANDLE(mali_device, dev, _device);
+
+   pthread_mutex_lock(&dev->lock);
+   const struct mali_device_fault f = dev->fault;
+   char desc[VK_MAX_DESCRIPTION_SIZE];
+   snprintf(desc, sizeof(desc), "%s", dev->lost_msg[0] ? dev->lost_msg : "no device fault");
+   pthread_mutex_unlock(&dev->lock);
+
+   const uint32_t naddr = f.valid && f.address_type != VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT;
+   const uint32_t nvendor = f.valid;
+
+   pFaultCounts->vendorBinarySize = 0;
+   if (!pFaultInfo) {
+      pFaultCounts->addressInfoCount = naddr;
+      pFaultCounts->vendorInfoCount = nvendor;
+      return VK_SUCCESS;
+   }
+
+   VkResult result = VK_SUCCESS;
+   memcpy(pFaultInfo->description, desc, sizeof(desc));
+
+   uint32_t n = pFaultInfo->pAddressInfos ? MIN2(pFaultCounts->addressInfoCount, naddr) : 0;
+   if (n) {
+      pFaultInfo->pAddressInfos[0] = (VkDeviceFaultAddressInfoEXT){
+         .addressType = f.address_type,
+         .reportedAddress = f.address,
+         .addressPrecision = 1,
+      };
+   }
+   if (n < naddr)
+      result = VK_INCOMPLETE;
+   pFaultCounts->addressInfoCount = n;
+
+   n = pFaultInfo->pVendorInfos ? MIN2(pFaultCounts->vendorInfoCount, nvendor) : 0;
+   if (n) {
+      VkDeviceFaultVendorInfoEXT *v = &pFaultInfo->pVendorInfos[0];
+      memset(v, 0, sizeof(*v));
+      snprintf(v->description, sizeof(v->description), "%s", f.what);
+      v->vendorFaultCode = f.code;
+      v->vendorFaultData = f.data;
+   }
+   if (n < nvendor)
+      result = VK_INCOMPLETE;
+   pFaultCounts->vendorInfoCount = n;
+
+   return result;
+}

@@ -114,6 +114,18 @@ enum mali_meta_shader {
    MALI_META_COUNT,
 };
 
+/* A fault as the kernel described it, for vkGetDeviceFaultInfoEXT. code
+ * and data become vendorFaultCode and vendorFaultData; address is a GPU
+ * virtual address when address_type is not NONE. */
+struct mali_device_fault {
+   bool valid;
+   VkDeviceFaultAddressTypeEXT address_type;
+   uint64_t address;
+   uint64_t code;
+   uint64_t data;
+   char what[VK_MAX_DESCRIPTION_SIZE];
+};
+
 struct mali_queue {
    struct vk_queue vk;
    /* Queue group, rings, submit state (mali_queue.h). */
@@ -173,6 +185,10 @@ struct mali_device {
    pthread_cond_t cond;
    bool lost;
    uint32_t lost_reported;        /* vk_device_set_lost called (atomic) */
+   /* What vkGetDeviceFaultInfoEXT reports, under lock: the message of the
+    * first device loss and the first fault the kernel described. */
+   char lost_msg[256];
+   struct mali_device_fault fault;
 
    struct {
       uint64_t kernel_events;       /* EVENT notifications read */
@@ -239,6 +255,16 @@ static inline struct mali_physical_device *
 mali_device_physical(struct mali_device *dev)
 {
    return container_of(dev->vk.physical, struct mali_physical_device, vk);
+}
+
+/* With dev->lock held: keep f unless a fault is kept already. */
+static inline void
+mali_device_record_fault(struct mali_device *dev, const struct mali_device_fault *f)
+{
+   if (!dev->fault.valid) {
+      dev->fault = *f;
+      dev->fault.valid = true;
+   }
 }
 
 #endif
