@@ -87,6 +87,8 @@ mali_device_set_lost(struct mali_device *dev, const char *fmt, ...)
    }
 
    pthread_mutex_lock(&dev->lock);
+   if (!dev->lost_msg[0])
+      snprintf(dev->lost_msg, sizeof(dev->lost_msg), "%s", msg);
    dev->lost = true;
    pthread_cond_broadcast(&dev->cond);
    pthread_mutex_unlock(&dev->lock);
@@ -159,34 +161,156 @@ group_error_name(uint8_t type)
    }
 }
 
+/* Exception types: the low byte of CS_FATAL (a queue error) or of the
+ * fault status of a group error (MMU or GPU fault status, or one of the
+ * kernel's own software codes). Arm's names. */
+static const char *
+exception_name(uint8_t type)
+{
+   switch (type) {
+   case 0x05: return "KABOOM";
+   case 0x0f: return "CS_RESOURCE_TERMINATED";
+   case 0x40: return "CS_CONFIG_FAULT";
+   case 0x41: return "CS_UNRECOVERABLE";
+   case 0x44: return "CS_ENDPOINT_FAULT";
+   case 0x48: return "CS_BUS_FAULT";
+   case 0x49: return "CS_INVALID_INSTRUCTION";
+   case 0x4a: return "CS_CALL_STACK_OVERFLOW";
+   case 0x4b: return "CS_INHERIT_FAULT";
+   case 0x50: return "INSTR_INVALID_PC";
+   case 0x51: return "INSTR_INVALID_ENC";
+   case 0x55: return "INSTR_BARRIER_FAULT";
+   case 0x58: return "DATA_INVALID_FAULT";
+   case 0x59: return "TILE_RANGE_FAULT";
+   case 0x5a: return "ADDR_RANGE_FAULT";
+   case 0x5b: return "IMPRECISE_FAULT";
+   case 0x68: return "FIRMWARE_INTERNAL_ERROR";
+   case 0x69: return "RESOURCE_EVICTION_TIMEOUT";
+   case 0x70: return "SW_FAULT_0";
+   case 0x71: return "SW_FAULT_1";
+   case 0x72: return "SW_FAULT_2";
+   case 0x80: return "GPU_BUS_FAULT";
+   case 0x88: return "GPU_SHAREABILITY_FAULT";
+   case 0x89: return "SYSTEM_SHAREABILITY_FAULT";
+   case 0x8a: return "GPU_CACHEABILITY_FAULT";
+   case 0xc0: case 0xc1: case 0xc2: case 0xc3: case 0xc4:
+      return "TRANSLATION_FAULT";
+   case 0xc8: case 0xc9: case 0xca: case 0xcb:
+      return "PERMISSION_FAULT";
+   case 0xd9: case 0xda: case 0xdb:
+      return "ACCESS_FLAG";
+   case 0xe0: return "ADDRESS_SIZE_FAULT_IN";
+   case 0xe4: case 0xe5: case 0xe6: case 0xe7:
+      return "ADDRESS_SIZE_FAULT_OUT";
+   case 0xe8: case 0xe9: case 0xea: case 0xeb:
+      return "MEMORY_ATTRIBUTE_FAULT";
+   default: return "UNKNOWN";
+   }
+}
+
+/* A GPU page fault reaches us as a group error whose status is the MMU's
+ * fault status and whose sideband is the faulting GPU virtual address.
+ * Bits 9:8 of the status are the access type. */
+static bool
+is_mmu_fault(uint8_t type)
+{
+   return type >= 0xc0 && type <= 0xeb;
+}
+
+static VkDeviceFaultAddressTypeEXT
+mmu_access_type(uint32_t status)
+{
+   switch ((status >> 8) & 3) {
+   case 1: return VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT;
+   case 2: return VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT;
+   default: return VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT;   /* write, atomic */
+   }
+}
+
+static const char *
+mmu_access_name(uint32_t status)
+{
+   static const char *const names[] = {"atomic", "execute", "read", "write"};
+   return names[(status >> 8) & 3];
+}
+
+/* The kernel's description of a group error as a device fault. */
+static void
+group_error_fault(const struct kb_gpu_queue_group_error *e, struct mali_device_fault *f)
+{
+   memset(f, 0, sizeof(*f));
+   f->address_type = VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT;
+   switch (e->error_type) {
+   case KB_GPU_QUEUE_GROUP_QUEUE_ERROR_FATAL: {
+      /* status is CS_FATAL (exception type, then exception data in bits
+       * 31:8), sideband is CS_FATAL_INFO. */
+      uint32_t st = e->payload.fatal_queue.status;
+      f->code = st & 0xff;
+      f->data = e->payload.fatal_queue.sideband;
+      snprintf(f->what, sizeof(f->what), "%s: %s (0x%02x) on CS %u, exception data 0x%06x",
+               group_error_name(e->error_type), exception_name(st & 0xff), st & 0xff,
+               e->payload.fatal_queue.csi_index, st >> 8);
+      break;
+   }
+   case KB_GPU_QUEUE_GROUP_ERROR_FATAL: {
+      uint32_t st = e->payload.fatal_group.status;
+      f->code = st & 0xff;
+      f->data = e->payload.fatal_group.sideband;
+      if (is_mmu_fault(st & 0xff)) {
+         f->address_type = mmu_access_type(st);
+         f->address = e->payload.fatal_group.sideband;
+         snprintf(f->what, sizeof(f->what), "%s: %s (0x%02x), %s access, source 0x%04x",
+                  group_error_name(e->error_type), exception_name(st & 0xff), st & 0xff,
+                  mmu_access_name(st), st >> 16);
+      } else {
+         snprintf(f->what, sizeof(f->what), "%s: %s (0x%02x)", group_error_name(e->error_type),
+                  exception_name(st & 0xff), st & 0xff);
+      }
+      break;
+   }
+   default:
+      /* Progress timeout and tiler heap out of memory carry no status. */
+      snprintf(f->what, sizeof(f->what), "%s", group_error_name(e->error_type));
+      break;
+   }
+}
+
 static void
 handle_group_error(struct mali_csf_device *csf, const struct kb_csf_notification *n)
 {
    const struct kb_gpu_queue_group_error *e = &n->payload.csg_error.error;
    uint8_t handle = n->payload.csg_error.handle;
    struct mali_device *dev = csf->dev;
+   struct mali_device_fault f;
+   group_error_fault(e, &f);
 
    pthread_mutex_lock(&dev->lock);
    dev->stats.group_errors++;
    bool ours = csf->group_valid && handle == csf->group_handle;
+   mali_device_record_fault(dev, &f);
    pthread_mutex_unlock(&dev->lock);
 
    /* The kernel has terminated the group; every error type, the tiler
     * heap one included, is treated as device loss. */
    if (e->error_type == KB_GPU_QUEUE_GROUP_QUEUE_ERROR_FATAL) {
       mali_device_set_lost(dev,
-                           "queue group %u: %s: CS %u status 0x%08x sideband 0x%016llx%s",
+                           "queue group %u: %s: CS %u status 0x%08x sideband 0x%016llx (%s)%s",
                            handle, group_error_name(e->error_type),
                            e->payload.fatal_queue.csi_index,
                            e->payload.fatal_queue.status,
                            (unsigned long long)e->payload.fatal_queue.sideband,
+                           exception_name(e->payload.fatal_queue.status & 0xff),
                            ours ? "" : " (not our group)");
-   } else {
-      mali_device_set_lost(dev, "queue group %u: %s: status 0x%08x sideband 0x%016llx%s",
+   } else if (e->error_type == KB_GPU_QUEUE_GROUP_ERROR_FATAL) {
+      mali_device_set_lost(dev, "queue group %u: %s: status 0x%08x sideband 0x%016llx (%s)%s",
                            handle, group_error_name(e->error_type),
                            e->payload.fatal_group.status,
                            (unsigned long long)e->payload.fatal_group.sideband,
+                           exception_name(e->payload.fatal_group.status & 0xff),
                            ours ? "" : " (not our group)");
+   } else {
+      mali_device_set_lost(dev, "queue group %u: %s%s", handle,
+                           group_error_name(e->error_type), ours ? "" : " (not our group)");
    }
 }
 

@@ -205,6 +205,8 @@ static const struct vk_device_extension_table mali_device_extensions = {
     * fences by importing the release fence (swapchain_maintenance1). */
    .KHR_external_fence_fd = true,
    .KHR_external_semaphore_fd = true,
+   /* ARMSX2 logs the fault records after VK_ERROR_DEVICE_LOST. */
+   .EXT_device_fault = true,
 #ifdef VK_USE_PLATFORM_ANDROID_KHR
    /* Without it the Android loader builds no swapchain. */
    .ANDROID_native_buffer = true,
@@ -310,6 +312,10 @@ get_features(struct vk_features *f, uint32_t arch)
       .stippledRectangularLines = false,
       .stippledBresenhamLines = false,
       .stippledSmoothLines = false,
+
+      /* VK_EXT_device_fault */
+      .deviceFaultEXT = true,
+      .deviceFaultVendorBinaryEXT = false,
    };
 }
 
