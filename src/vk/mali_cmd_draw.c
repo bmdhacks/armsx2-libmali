@@ -4,9 +4,12 @@
  */
 
 /*
- * Draws: graphics pipeline binds, vertex and index buffers, vkCmdDraw /
- * vkCmdDrawIndexed as RUN_IDVS on the vertex/tiler subqueue, full-screen
- * draws (RUN_FULLSCREEN) for vkCmdClearAttachments and in-pass barriers.
+ * Draws on the command-stream frontend: vkCmdDraw / vkCmdDrawIndexed as
+ * RUN_IDVS on the vertex/tiler subqueue, full-screen draws
+ * (RUN_FULLSCREEN) for vkCmdClearAttachments and in-pass barriers. The
+ * binds, the dirty bits and the descriptors a draw points at are shared
+ * with the job-manager back half (mali_cmd_state.[ch]); this file turns
+ * them into register moves.
  *
  * The encoding follows panvk v11 (csf/panvk_vX_cmd_draw.c: prepare_draw,
  * launch_draw, cmd_run_fullscreen, cmd_fb_barrier), "which source wins"
@@ -25,179 +28,19 @@
  * bits (MALI_GFX_DIRTY_*).
  */
 
-#include "mali_blend.h"
-#include "mali_cmd_buffer.h"
+#include "mali_cmd_state.h"
 #include "mali_measure.h"
 
-#include <string.h>
-
-#include "util/format/u_format.h"
-#include "util/u_math.h"
-#include "vk_buffer.h"
-#include "vk_format.h"
 #include "vk_log.h"
 
-#include "pan_format.h"
-
 #include "mali_arch.h"
-#include "mali_descriptor_set.h"
-#include "mali_image.h"
-#include "mali_pipeline.h"
 #include "mali_queue.h"
-#include "mali_vk.h"
 
 #if PAN_ARCH != 11
 #error "mali_cmd_draw.c is written for arch v11"
 #endif
 
 #define IDVS(reg) MALI_IDVS_SR_##reg
-
-/* ---------------------------------------------------------------------- */
-/* Binding                                                                 */
-
-/*
- * The static states other than vertex input that the draws read, copied
- * into the command buffer's dynamic state the way the runtime's
- * vk_dynamic_graphics_state_copy does it (value, then the dirty and set
- * bits when it changed), for the few states that need it.
- */
-static void
-bind_static_state(struct vk_dynamic_graphics_state *dyn, const struct mali_graphics_pipeline *p,
-                  uint32_t m)
-{
-   const struct vk_dynamic_graphics_state *src = &p->state;
-#define MARK(STATE)                                                            \
-   do {                                                                        \
-      BITSET_SET(dyn->dirty, MESA_VK_DYNAMIC_##STATE);                         \
-      BITSET_SET(dyn->set, MESA_VK_DYNAMIC_##STATE);                           \
-   } while (0)
-
-   if (m & MALI_GFX_STATIC_VIEWPORTS) {
-      const uint32_t n = src->vp.viewport_count;
-      if (dyn->vp.viewport_count != n ||
-          memcmp(dyn->vp.viewports, src->vp.viewports, n * sizeof(src->vp.viewports[0]))) {
-         dyn->vp.viewport_count = n;
-         memcpy(dyn->vp.viewports, src->vp.viewports, n * sizeof(src->vp.viewports[0]));
-         MARK(VP_VIEWPORT_COUNT);
-         MARK(VP_VIEWPORTS);
-      }
-   }
-   if (m & MALI_GFX_STATIC_SCISSORS) {
-      const uint32_t n = src->vp.scissor_count;
-      if (dyn->vp.scissor_count != n ||
-          memcmp(dyn->vp.scissors, src->vp.scissors, n * sizeof(src->vp.scissors[0]))) {
-         dyn->vp.scissor_count = n;
-         memcpy(dyn->vp.scissors, src->vp.scissors, n * sizeof(src->vp.scissors[0]));
-         MARK(VP_SCISSOR_COUNT);
-         MARK(VP_SCISSORS);
-      }
-   }
-   if ((m & MALI_GFX_STATIC_BLEND_CONSTANTS) &&
-       memcmp(dyn->cb.blend_constants, src->cb.blend_constants, sizeof(src->cb.blend_constants))) {
-      memcpy(dyn->cb.blend_constants, src->cb.blend_constants, sizeof(src->cb.blend_constants));
-      MARK(CB_BLEND_CONSTANTS);
-   }
-   /* These two from the bind block's copies: every ARMSX2 pipeline sets
-    * them, and the full state is on cache lines a bind otherwise does not
-    * touch. */
-   if ((m & MALI_GFX_STATIC_LINE_WIDTH) && dyn->rs.line.width != p->bind.line_width) {
-      dyn->rs.line.width = p->bind.line_width;
-      MARK(RS_LINE_WIDTH);
-   }
-   if ((m & MALI_GFX_STATIC_IAL) && memcmp(&dyn->ial, &p->bind.ial, sizeof(p->bind.ial))) {
-      dyn->ial = p->bind.ial;
-      MARK(INPUT_ATTACHMENT_MAP);
-   }
-#undef MARK
-}
-
-/*
- * vkCmdBindPipeline for a graphics pipeline. A pipeline whose baked words
- * use no dynamic state (every ARMSX2 pipeline) does not go through the
- * runtime's copy of its whole static state: the draws read only vertex
- * input (pointed to), viewport, scissor, blend constants, line width and
- * the input attachment map (copied when the pipeline sets them). The
- * runtime's state is left stale for the rest, which nothing reads: a later
- * pipeline that repacks from dynamic state gets the full copy, and state
- * it leaves dynamic must be set again after its bind (Vulkan's rule for
- * state a bound pipeline had static).
- */
-void
-mali_cmd_bind_graphics(struct mali_cmd_buffer *cmd, struct mali_graphics_pipeline *p)
-{
-   struct mali_gfx_draw_state *d = &cmd->gfx.draw;
-   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
-   const struct mali_gfx_bind *bd = &p->bind;
-
-   if (unlikely(bd->dynamic)) {
-      vk_cmd_set_dynamic_graphics_state(&cmd->vk, &p->state);
-      d->vi = dyn->vi;
-      d->vi_strides = dyn->vi_binding_strides;
-   } else {
-      const uint32_t m = bd->static_mask;
-      d->vi = (m & MALI_GFX_STATIC_VI) ? &p->vi : dyn->vi;
-      d->vi_strides = (m & MALI_GFX_STATIC_STRIDES) ? p->state.vi_binding_strides
-                                                     : dyn->vi_binding_strides;
-      if (m & ~(MALI_GFX_STATIC_VI | MALI_GFX_STATIC_STRIDES))
-         bind_static_state(dyn, p, m);
-   }
-
-   if (d->pipeline == p)
-      return;
-   d->pipeline = p;
-   d->dirty |= MALI_GFX_DIRTY_PIPELINE | MALI_GFX_DIRTY_VS_FAU | MALI_GFX_DIRTY_FS_FAU |
-               MALI_GFX_DIRTY_BLEND | MALI_GFX_DIRTY_ZSD;
-   /* Tables whose inputs from the pipeline side did not change stay. */
-   if (!bd->vs_srt_key || bd->vs_srt_key != d->vs_srt_key)
-      d->dirty |= MALI_GFX_DIRTY_VS_SRT;
-   if (!bd->fs_srt_key || bd->fs_srt_key != d->fs_srt_key)
-      d->dirty |= MALI_GFX_DIRTY_FS_SRT;
-}
-
-VKAPI_ATTR void VKAPI_CALL
-MALI_PER_ARCH(CmdBindVertexBuffers2)(VkCommandBuffer commandBuffer, uint32_t firstBinding,
-                                     uint32_t bindingCount, const VkBuffer *pBuffers,
-                                     const VkDeviceSize *pOffsets, const VkDeviceSize *pSizes,
-                                     const VkDeviceSize *pStrides)
-{
-   VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
-   struct mali_gfx_draw_state *d = &cmd->gfx.draw;
-
-   assert(firstBinding + bindingCount <= MALI_MAX_VBS);
-   for (uint32_t i = 0; i < bindingCount; i++) {
-      VK_FROM_HANDLE(vk_buffer, buf, pBuffers[i]);
-      const uint32_t b = firstBinding + i;
-      if (!buf) {
-         d->vb[b].addr = 0;
-         d->vb[b].size = 0;
-         continue;
-      }
-      d->vb[b].addr = vk_buffer_address(buf, pOffsets[i]);
-      d->vb[b].size = vk_buffer_range(buf, pOffsets[i], pSizes ? pSizes[i] : VK_WHOLE_SIZE);
-   }
-   if (pStrides)
-      vk_cmd_set_vertex_binding_strides(&cmd->vk, firstBinding, bindingCount, pStrides);
-   d->dirty |= MALI_GFX_DIRTY_VS_SRT;
-}
-
-VKAPI_ATTR void VKAPI_CALL
-MALI_PER_ARCH(CmdBindIndexBuffer2KHR)(VkCommandBuffer commandBuffer, VkBuffer buffer,
-                                      VkDeviceSize offset, VkDeviceSize size, VkIndexType indexType)
-{
-   VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
-   VK_FROM_HANDLE(vk_buffer, buf, buffer);
-   struct mali_gfx_draw_state *d = &cmd->gfx.draw;
-
-   d->ib.index_size = vk_index_type_to_bytes(indexType);
-   if (buf) {
-      d->ib.addr = vk_buffer_address(buf, offset);
-      d->ib.size = (uint32_t)MIN2(vk_buffer_range(buf, offset, size), UINT32_MAX);
-   } else {
-      d->ib.addr = 0;
-      d->ib.size = 0;
-   }
-   d->dirty |= MALI_GFX_DIRTY_INDEX;
-}
 
 /* ---------------------------------------------------------------------- */
 /* FAU                                                                     */
@@ -299,593 +142,8 @@ emit_ubo_push_general(struct mali_cmd_buffer *cmd, const struct mali_shader *s,
 #undef FLUSH_PENDING
 }
 
-uint64_t
-mali_cmd_gfx_fau(struct mali_cmd_buffer *cmd, const struct mali_shader *s,
-                 const void *sysvals, const void *push, uint32_t push_size)
-{
-   if (!s || !s->fau.total_count)
-      return 0;
-
-   const uint32_t total = s->fau.total_count;
-   struct mali_ptr p = mali_cmd_alloc(cmd, total * 8, 16);
-   if (!p.cpu)
-      return 0;
-
-   /* The sysval words the shader reads, with the block's own address in
-    * common.push_uniforms, then its push-constant words (zero past the
-    * end of push). Read in place: this runs twice a draw. */
-   const unsigned push_uniforms_word =
-      offsetof(struct mali_graphics_sysvals, common.push_uniforms) / MALI_FAU_WORD_SIZE;
-   uint64_t tmp[MALI_FAU_WORD_COUNT];
-   unsigned n = 0, w;
-   BITSET_FOREACH_SET(w, s->fau.used_sysvals, MALI_MAX_SYSVAL_FAUS) {
-      tmp[n++] = w == push_uniforms_word ?
-                    p.gpu :
-                    mali_sysval_word(sysvals, sizeof(struct mali_graphics_sysvals), w);
-   }
-   const uint32_t push_len = MIN2(push_size, MALI_MAX_PUSH_CONST_FAUS * MALI_FAU_WORD_SIZE);
-   BITSET_FOREACH_SET(w, s->fau.used_push_consts, MALI_MAX_PUSH_CONST_FAUS) {
-      uint64_t v = 0;
-      const uint32_t off = w * MALI_FAU_WORD_SIZE;
-      if (off < push_len)
-         memcpy(&v, (const uint8_t *)push + off, MIN2(push_len - off, sizeof(v)));
-      tmp[n++] = v;
-   }
-   n += mali_shader_fau_consts(&s->fau, &tmp[n]);
-   /* Uniform-buffer words: zero here, copied by the GPU (emit_ubo_push). */
-   assert(!s->fau.ubo_push_count || n == s->fau.ubo_push_start);
-   for (unsigned i = n; i < total; i++)
-      tmp[i] = 0;
-
-   pan_fau_foreach_imm(&s->info.fau, i) {
-      bool hi = i & 1;
-      unsigned idx = i / 2;
-      assert(idx < total);
-      tmp[idx] = (tmp[idx] & ((uint64_t)UINT32_MAX << (32 * !hi))) |
-                 ((uint64_t)s->info.fau.words[i].constant << (32 * hi));
-   }
-
-   memcpy(p.cpu, tmp, total * sizeof(tmp[0]));
-   return p.gpu | ((uint64_t)total << 56);
-}
-
-/* The sysvals every graphics stage of the current draw sees. */
-static void
-fill_sysvals(struct mali_cmd_buffer *cmd, struct mali_graphics_sysvals *sv)
-{
-   const struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
-   const struct mali_gfx_draw_state *d = &cmd->gfx.draw;
-   const struct mali_graphics_pipeline *p = d->pipeline;
-
-   memset(sv, 0, sizeof(*sv));
-   for (unsigned i = 0; i < 4; i++)
-      sv->blend.constants[i] = dyn->cb.blend_constants[i];
-
-   /* Viewport transform (the vertex shader applies it): scale (w/2, h/2,
-    * zmax - zmin), offset (x + w/2, y + h/2, zmin). */
-   const VkViewport *vp = &dyn->vp.viewports[0];
-   sv->viewport[0].scale = 0.5f * vp->width;
-   sv->viewport[1].scale = 0.5f * vp->height;
-   sv->viewport[2].scale = vp->maxDepth - vp->minDepth;
-   sv->viewport[0].offset = 0.5f * vp->width + vp->x;
-   sv->viewport[1].offset = 0.5f * vp->height + vp->y;
-   sv->viewport[2].offset = vp->minDepth;
-
-   sv->vs.first_vertex = d->first_vertex;
-   sv->vs.base_instance = d->base_instance;
-   sv->vs.noperspective_varyings = p->bind.noperspective;
-   memcpy(sv->fs.blend_descs, d->blend_descs, sizeof(sv->fs.blend_descs));
-
-   /* Input attachments: colour targets through the tile buffer with their
-    * conversion, depth/stencil as the ZS target (panvk
-    * prepare_iam_sysvals). */
-   memset(sv->iam, 0xff, sizeof(sv->iam));
-   const struct vk_input_attachment_location_state *ial = &dyn->ial;
-   const struct mali_render_state *r = &cmd->gfx.render;
-   const uint32_t catt = ial->color_attachment_count == MESA_VK_COLOR_ATTACHMENT_COUNT_UNKNOWN ?
-                            MALI_MAX_RTS : ial->color_attachment_count;
-   for (uint32_t i = 0; i < catt && i < MALI_MAX_RTS; i++) {
-      if (ial->color_map[i] == MESA_VK_ATTACHMENT_UNUSED || i >= r->desc.rt_count ||
-          !r->desc.rt[i].image)
-         continue;
-      const uint32_t idx = ial->color_map[i] + 1;
-      if (idx >= MALI_INPUT_ATTACHMENT_MAP_SIZE)
-         continue;
-      struct mali_internal_conversion_packed conv;
-      pan_pack(&conv, INTERNAL_CONVERSION, cfg) {
-         cfg.memory_format =
-            GENX(pan_dithered_format_from_pipe_format)(r->desc.rt[i].format, false);
-      }
-      sv->iam[idx].target = MALI_COLOR_ATTACHMENT(i);
-      sv->iam[idx].conversion = conv.opaque[0];
-   }
-   if (ial->depth_att != MESA_VK_ATTACHMENT_UNUSED) {
-      uint32_t idx = ial->depth_att == MESA_VK_ATTACHMENT_NO_INDEX ? 0 : ial->depth_att + 1;
-      if (idx < MALI_INPUT_ATTACHMENT_MAP_SIZE) {
-         sv->iam[idx].target = MALI_ZS_ATTACHMENT;
-         sv->iam[idx].conversion = 0;
-      }
-   }
-   if (ial->stencil_att != MESA_VK_ATTACHMENT_UNUSED) {
-      uint32_t idx = ial->stencil_att == MESA_VK_ATTACHMENT_NO_INDEX ? 0 : ial->stencil_att + 1;
-      if (idx < MALI_INPUT_ATTACHMENT_MAP_SIZE) {
-         sv->iam[idx].target = MALI_ZS_ATTACHMENT;
-         sv->iam[idx].conversion = 0;
-      }
-   }
-}
-
-/* ---------------------------------------------------------------------- */
-/* Resource tables                                                         */
-
-static void
-pack_dyn_bufs(const struct mali_shader_desc_info *di, const struct mali_desc_state *desc,
-              uint8_t *out)
-{
-   for (uint32_t i = 0; i < di->dyn_bufs.count; i++) {
-      uint32_t h = di->dyn_bufs.map[i];
-      uint32_t set = MALI_COPY_DESC_HANDLE_SET(h);
-      uint32_t idx = MALI_COPY_DESC_HANDLE_INDEX(h);
-      const struct mali_descriptor_set *s = desc->sets[set];
-      uint8_t *o = out + i * MALI_DESCRIPTOR_SIZE;
-      if (s)
-         mali_descriptor_set_pack_dyn_buf(s, idx, desc->dyn_offsets[set][idx], o);
-      else
-         memset(o, 0, MALI_DESCRIPTOR_SIZE);
-   }
-}
-
-/* Resource table: entry 0 the driver set (already built), entry N + 1
- * descriptor set N. */
-static uint64_t
-build_res_table(struct mali_cmd_buffer *cmd, const struct mali_shader *s,
-                const struct mali_desc_state *desc, uint64_t drv, uint32_t drv_count)
-{
-   const struct mali_shader_desc_info *di = &s->desc;
-   uint32_t last = util_last_bit(di->used_set_mask);
-   uint32_t count = ALIGN_POT(1 + last, MALI_RESOURCE_TABLE_SIZE_ALIGNMENT);
-   struct mali_ptr t = mali_cmd_alloc(cmd, count * MALI_RESOURCE_SIZE, 64);
-   if (!t.cpu)
-      return 0;
-
-   pan_cast_and_pack(t.cpu, RESOURCE, cfg) {
-      cfg.address = drv;
-      cfg.size = drv_count * MALI_DESCRIPTOR_SIZE;
-      cfg.contains_descriptors = true;
-   }
-   for (uint32_t i = 1; i < count; i++) {
-      uint32_t set = i - 1;
-      const struct mali_descriptor_set *ds =
-         (set < MALI_MAX_SETS && (di->used_set_mask & BITFIELD_BIT(set))) ? desc->sets[set]
-                                                                          : NULL;
-      mali_descriptor_set_pack_resource(ds, (uint8_t *)t.cpu + i * MALI_RESOURCE_SIZE);
-   }
-   return t.gpu | count;
-}
-
-/* One vertex attribute (panvk emit_vs_attrib). */
-static void
-pack_attrib(const struct vk_vertex_input_state *vi, const uint16_t *strides, uint32_t i,
-            uint32_t vb_offset, uint32_t base_instance, void *out)
-{
-   const struct vk_vertex_attribute_state *a = &vi->attributes[i];
-   const struct vk_vertex_binding_state *bs = &vi->bindings[a->binding];
-   const uint32_t stride = strides[a->binding];
-   const bool per_instance = bs->input_rate == VK_VERTEX_INPUT_RATE_INSTANCE;
-   const enum pipe_format f = vk_format_to_pipe_format(a->format);
-
-   pan_cast_and_pack(out, ATTRIBUTE, cfg) {
-      cfg.offset = a->offset + (per_instance ? base_instance * stride : 0);
-      cfg.format = GENX(pan_format_from_pipe_format)(f)->hw;
-      cfg.table = 0;
-      cfg.buffer_index = vb_offset + a->binding;
-      cfg.stride = stride;
-      if (!per_instance) {
-         cfg.attribute_type = MALI_ATTRIBUTE_TYPE_1D;
-         cfg.frequency = MALI_ATTRIBUTE_FREQUENCY_VERTEX;
-         cfg.offset_enable = true;
-      } else if (bs->divisor == 1) {
-         cfg.attribute_type = MALI_ATTRIBUTE_TYPE_1D;
-         cfg.frequency = MALI_ATTRIBUTE_FREQUENCY_INSTANCE;
-      } else if (bs->divisor == 0) {
-         cfg.attribute_type = MALI_ATTRIBUTE_TYPE_1D;
-         cfg.frequency = MALI_ATTRIBUTE_FREQUENCY_INSTANCE;
-         cfg.stride = 0;
-      } else if (util_is_power_of_two_or_zero(bs->divisor)) {
-         cfg.attribute_type = MALI_ATTRIBUTE_TYPE_1D_POT_DIVISOR;
-         cfg.frequency = MALI_ATTRIBUTE_FREQUENCY_INSTANCE;
-         cfg.divisor_r = __builtin_ctz(bs->divisor);
-      } else {
-         /* Not reachable for ARMSX2 (no divisors); the NPOT magic numbers
-          * are not implemented. */
-         cfg.attribute_type = MALI_ATTRIBUTE_TYPE_1D;
-         cfg.frequency = MALI_ATTRIBUTE_FREQUENCY_INSTANCE;
-      }
-   }
-}
-
-/* Vertex stage table 0: 16 attributes, the dummy sampler, the dynamic
- * buffers, then one Buffer per vertex binding (panvk
- * prepare_vs_driver_set). */
-static uint64_t
-build_vs_srt(struct mali_cmd_buffer *cmd)
-{
-   const struct mali_gfx_draw_state *d = &cmd->gfx.draw;
-   const struct mali_shader *vs = d->pipeline->vs;
-   const struct vk_vertex_input_state *vi = d->vi;
-
-   uint32_t vb_count = 0;
-   u_foreach_bit(i, vi->attributes_valid)
-      vb_count = MAX2(vi->attributes[i].binding + 1, vb_count);
-   const uint32_t vb_offset = MALI_MAX_VS_ATTRIBS + 1 + vs->desc.dyn_bufs.count;
-   const uint32_t count = vb_offset + vb_count;
-
-   struct mali_ptr p = mali_cmd_alloc(cmd, count * MALI_DESCRIPTOR_SIZE, MALI_DESCRIPTOR_SIZE);
-   if (!p.cpu)
-      return 0;
-   uint8_t *descs = p.cpu;
-
-   for (uint32_t i = 0; i < MALI_MAX_VS_ATTRIBS; i++) {
-      void *o = descs + i * MALI_DESCRIPTOR_SIZE;
-      if (vi->attributes_valid & BITFIELD_BIT(i)) {
-         pack_attrib(vi, d->vi_strides, i, vb_offset, d->base_instance, o);
-      } else {
-         /* An invalid table makes reads out of bounds (panvk). */
-         pan_cast_and_pack(o, ATTRIBUTE, cfg) {
-            cfg.table = 17;
-            cfg.format = (MALI_R16F << 12) | MALI_RGB_COMPONENT_ORDER_RGBA;
-         }
-      }
-   }
-   mali_pack_dummy_sampler(descs + MALI_MAX_VS_ATTRIBS * MALI_DESCRIPTOR_SIZE);
-   pack_dyn_bufs(&vs->desc, &cmd->gfx.desc,
-                 descs + (MALI_MAX_VS_ATTRIBS + 1) * MALI_DESCRIPTOR_SIZE);
-   for (uint32_t i = 0; i < vb_count; i++) {
-      void *o = descs + (vb_offset + i) * MALI_DESCRIPTOR_SIZE;
-      if ((vi->bindings_valid & BITFIELD_BIT(i)) && d->vb[i].addr) {
-         pan_cast_and_pack(o, BUFFER, cfg) {
-            cfg.address = d->vb[i].addr;
-            cfg.size = (uint32_t)MIN2(d->vb[i].size, UINT32_MAX);
-         }
-      } else {
-         pan_cast_and_pack(o, NULL_DESCRIPTOR, cfg);
-      }
-   }
-   return build_res_table(cmd, vs, &cmd->gfx.desc, p.gpu, count);
-}
-
-/* Fragment varyings read with LD_VAR (panvk emit_varying_descs). */
-static void
-pack_varying_descs(const struct mali_shader *vs, const struct mali_shader *fs, uint8_t *out)
-{
-   const struct pan_varying_layout *vl = &vs->info.varyings.formats;
-   const struct pan_varying_layout *fl = &fs->info.varyings.formats;
-
-   for (uint32_t i = 0; i < fl->count && i < fs->desc.driver_table_prefix; i++) {
-      const struct pan_varying_slot *fslot = pan_varying_layout_slot_at(fl, i);
-      if (!fslot || fslot->section != PAN_VARYING_SECTION_GENERIC)
-         continue;
-      unsigned offset = 0;
-      enum pipe_format format = PIPE_FORMAT_NONE;
-      const struct pan_varying_slot *vslot = pan_varying_layout_find_slot(vl, fslot->location);
-      if (vslot) {
-         nir_alu_type base = nir_alu_type_get_base_type(fslot->alu_type);
-         nir_alu_type bits = nir_alu_type_get_type_size(vslot->alu_type);
-         offset = vslot->offset;
-         format = pan_varying_format(base | bits, vslot->ncomps);
-      }
-      pan_cast_and_pack(out + i * MALI_DESCRIPTOR_SIZE, ATTRIBUTE, cfg) {
-         cfg.attribute_type = MALI_ATTRIBUTE_TYPE_VERTEX_PACKET;
-         cfg.offset_enable = false;
-         cfg.format = GENX(pan_format_from_pipe_format)(format)->hw;
-         cfg.table = 61;
-         cfg.frequency = MALI_ATTRIBUTE_FREQUENCY_VERTEX;
-         cfg.offset = 1024 + offset;
-         cfg.buffer_index = 0;
-         cfg.attribute_stride = vl->generic_size_B;
-         cfg.packet_stride = vl->generic_size_B + 16;
-      }
-   }
-}
-
-static uint64_t
-build_fs_srt(struct mali_cmd_buffer *cmd)
-{
-   const struct mali_graphics_pipeline *p = cmd->gfx.draw.pipeline;
-   const struct mali_shader *fs = p->fs;
-   const uint32_t prefix = fs->desc.driver_table_prefix;
-   const uint32_t count = prefix + 1 + fs->desc.dyn_bufs.count;
-
-   struct mali_ptr t = mali_cmd_alloc(cmd, count * MALI_DESCRIPTOR_SIZE, MALI_DESCRIPTOR_SIZE);
-   if (!t.cpu)
-      return 0;
-   uint8_t *descs = t.cpu;
-   memset(descs, 0, prefix * MALI_DESCRIPTOR_SIZE);
-   if (fs->desc.needs_varying_descs)
-      pack_varying_descs(p->vs, fs, descs);
-   mali_pack_dummy_sampler(descs + prefix * MALI_DESCRIPTOR_SIZE);
-   pack_dyn_bufs(&fs->desc, &cmd->gfx.desc, descs + (prefix + 1) * MALI_DESCRIPTOR_SIZE);
-   return build_res_table(cmd, fs, &cmd->gfx.desc, t.gpu, count);
-}
-
-/* ---------------------------------------------------------------------- */
-/* Blend                                                                   */
-
-/* The blend constant for fixed-function blending: UNORM of the target's
- * channel size, in the top bits of 16 (pan_pack_blend_constant). Blend
- * factors of UNORM targets are clamped to [0, 1] (Vulkan, "Blend
- * Factors"); ARMSX2 passes AFIX / 128, up to 1.99. */
-static uint16_t
-pack_blend_constant(enum pipe_format format, float c)
-{
-   const struct util_format_description *desc = util_format_description(format);
-   unsigned size = 0;
-   for (unsigned i = 0; i < desc->nr_channels; i++)
-      size = MAX2(desc->channel[0].size, size);
-   if (!size || size > 16)
-      return 0;
-   float factor = (float)(((1u << size) - 1) << (16 - size));
-   return (uint16_t)(CLAMP(c, 0.0f, 1.0f) * factor);
-}
-
-/* The blend constant channels `mask` reads are all the same value
- * (fixed-function blending has one constant). */
-static bool
-homogeneous_constant(unsigned mask, const float *consts)
-{
-   const float c = consts[ffs(mask) - 1];
-   u_foreach_bit(i, mask) {
-      if (consts[i] != c)
-         return false;
-   }
-   return true;
-}
-
-/* The address of the blend shader for render target `i`, 0 if there is
- * none (compile failure, logged). */
-static uint64_t
-blend_shader_for(struct mali_cmd_buffer *cmd, const struct mali_graphics_pipeline *p, unsigned i)
-{
-   const struct mali_render_state *r = &cmd->gfx.render;
-   struct mali_blend_shader_key key;
-   mali_blend_shader_key_init(&key, &p->baked, i, r->desc.rt[i].format,
-                              r->desc.rt[i].image->vk.samples, &p->fs->info);
-
-   uint64_t addr = 0;
-   if (mali_blend_shader_get(cmd->dev, &key, &addr) != VK_SUCCESS) {
-      static bool warned;
-      if (!warned) {
-         warned = true;
-         mesa_logw("libmali: a blend shader failed to compile; the colour is stored "
-                   "unblended");
-      }
-      return 0;
-   }
-   /* The descriptor holds 32 bits of the address; the fragment shader's
-    * jump supplies the rest. */
-   assert(addr >> 32 == p->fs->code.gpu_va >> 32);
-   assert(!(addr & 15));
-   return addr;
-}
-
-/*
- * The Blend descriptors of the current pipeline for the current render
- * pass (panvk blend_emit_descs with the equations our pipeline compile
- * baked in), and the internal words the fragment shader's BLEND
- * instructions read (by output location).
- *
- * A target uses a blend shader when the pipeline says so, or when it uses
- * the blend constant in fixed function and either its channels disagree or
- * the value differs from the one an earlier target already uses: the
- * hardware has a single constant (panvk blend_needs_shader).
- */
-static uint64_t
-build_blend(struct mali_cmd_buffer *cmd, uint32_t *count_out)
-{
-   struct mali_gfx_draw_state *d = &cmd->gfx.draw;
-   const struct mali_graphics_pipeline *p = d->pipeline;
-   const struct mali_gfx_baked *bk = &p->baked;
-   const struct mali_render_state *r = &cmd->gfx.render;
-   const float *consts = cmd->vk.dynamic_graphics_state.cb.blend_constants;
-   const uint32_t count = r->rt_count;
-
-   struct mali_ptr m = mali_cmd_alloc(cmd, count * pan_size(BLEND), 64);
-   if (!m.cpu)
-      return 0;
-
-   /* Which targets need a blend shader, and the fixed-function constant
-    * (all ones: none yet). */
-   uint64_t shader[MALI_MAX_RTS] = {0};
-   bool opaque_fallback[MALI_MAX_RTS] = {false};
-   uint32_t ff_constant = ~0u;
-   for (uint32_t i = 0; i < count && i < bk->rt_count; i++) {
-      const struct mali_blend_rt_baked *rt = &bk->blend[i];
-      const bool have_rt = i < r->desc.rt_count && r->desc.rt[i].image;
-      if (!p->fs || rt->mode == MALI_BLEND_RT_OFF || !have_rt)
-         continue;
-
-      bool use_shader = rt->mode == MALI_BLEND_RT_SHADER;
-      if (rt->mode == MALI_BLEND_RT_FIXED_FUNCTION && rt->constant_mask) {
-         const uint32_t c = pack_blend_constant(r->desc.rt[i].format,
-                                                consts[ffs(rt->constant_mask) - 1]);
-         if (!homogeneous_constant(rt->constant_mask, consts) ||
-             (ff_constant != ~0u && c != ff_constant))
-            use_shader = true;
-         else
-            ff_constant = c;
-      }
-      if (use_shader) {
-         shader[i] = blend_shader_for(cmd, p, i);
-         opaque_fallback[i] = !shader[i];
-      }
-   }
-   if (ff_constant == ~0u)
-      ff_constant = 0;
-
-   d->blend_shader_mask = 0;
-   for (uint32_t i = 0; i < count; i++)
-      d->blend_shader_mask |= shader[i] ? BITFIELD_BIT(i) : 0;
-
-   memset(d->blend_descs, 0, sizeof(d->blend_descs));
-   struct mali_blend_packed off;
-   pan_pack(&off, BLEND, cfg) {
-      cfg.enable = false;
-      cfg.internal.mode = MALI_BLEND_MODE_OFF;
-   }
-   for (unsigned loc = 0; loc < MALI_MAX_RTS; loc++)
-      d->blend_descs[loc] = off.opaque[2] | (uint64_t)off.opaque[3] << 32;
-
-   /* Packed here and copied out at the end: m is uncached, and reading
-    * back from it (the internal words below) stalls for a memory round
-    * trip. */
-   struct mali_blend_packed descs[MALI_MAX_RTS];
-   assert(count <= MALI_MAX_RTS);
-   for (uint32_t i = 0; i < count; i++) {
-      struct mali_blend_packed *out = &descs[i];
-      const struct mali_blend_rt_baked *rt = i < bk->rt_count ? &bk->blend[i] : NULL;
-      const bool have_rt = i < r->desc.rt_count && r->desc.rt[i].image;
-
-      if (!p->fs || !rt || rt->mode == MALI_BLEND_RT_OFF || !have_rt) {
-         *out = off;
-         continue;
-      }
-
-      const enum pipe_format fmt = r->desc.rt[i].format;
-      if (shader[i]) {
-         pan_pack(out, BLEND, cfg) {
-            cfg.srgb = util_format_is_srgb(fmt);
-            cfg.load_destination = rt->load_destination;
-            cfg.round_to_fb_precision = true;
-            cfg.blend_constant = ff_constant;
-            cfg.internal.mode = MALI_BLEND_MODE_SHADER;
-            cfg.internal.shader.pc = (uint32_t)shader[i];
-         }
-      } else {
-         enum mali_blend_rt_mode mode = opaque_fallback[i] ? MALI_BLEND_RT_OPAQUE : rt->mode;
-         pan_pack(out, BLEND, cfg) {
-            cfg.srgb = util_format_is_srgb(fmt);
-            cfg.load_destination = rt->load_destination && mode == MALI_BLEND_RT_FIXED_FUNCTION;
-            cfg.round_to_fb_precision = true;
-            cfg.blend_constant = ff_constant;
-            cfg.internal.mode = mode == MALI_BLEND_RT_OPAQUE ? MALI_BLEND_MODE_OPAQUE
-                                                             : MALI_BLEND_MODE_FIXED_FUNCTION;
-            cfg.internal.fixed_function.num_comps = 4;
-            cfg.internal.fixed_function.conversion.memory_format =
-               GENX(pan_dithered_format_from_pipe_format)(fmt, false);
-            if (cfg.internal.mode == MALI_BLEND_MODE_FIXED_FUNCTION &&
-                (cfg.internal.fixed_function.conversion.memory_format & 0xff) ==
-                   MALI_RGB_COMPONENT_ORDER_RGB1) {
-               /* Fixed-function blending does not take RGB1 (panvk). */
-               cfg.internal.fixed_function.conversion.memory_format &= ~0xff;
-               cfg.internal.fixed_function.conversion.memory_format |=
-                  MALI_RGB_COMPONENT_ORDER_RGBA;
-            }
-            cfg.internal.fixed_function.rt = i;
-         }
-         /* The baked equation word (descriptor word 1); a failed blend
-          * shader stores the source, colour mask applied. */
-         if (rt->mode == MALI_BLEND_RT_SHADER) {
-            struct mali_blend_equation_packed replace;
-            pan_pack(&replace, BLEND_EQUATION, cfg) {
-               cfg.rgb.a = MALI_BLEND_OPERAND_A_SRC;
-               cfg.rgb.b = MALI_BLEND_OPERAND_B_SRC;
-               cfg.rgb.c = MALI_BLEND_OPERAND_C_ZERO;
-               cfg.alpha.a = MALI_BLEND_OPERAND_A_SRC;
-               cfg.alpha.b = MALI_BLEND_OPERAND_B_SRC;
-               cfg.alpha.c = MALI_BLEND_OPERAND_C_ZERO;
-               cfg.color_mask = rt->eq.color_mask;
-            }
-            out->opaque[1] = replace.opaque[0];
-         } else {
-            out->opaque[1] = rt->equation;
-         }
-      }
-
-      if (rt->shader_location < MALI_MAX_RTS)
-         d->blend_descs[rt->shader_location] =
-            out->opaque[2] | (uint64_t)out->opaque[3] << 32;
-   }
-
-   memcpy(m.cpu, descs, count * sizeof(descs[0]));
-   *count_out = count;
-   return m.gpu;
-}
-
-/* ---------------------------------------------------------------------- */
-/* Viewport and scissor                                                    */
-
-static uint64_t
-scissor_box(const struct mali_cmd_buffer *cmd)
-{
-   const struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
-   const VkViewport *vp = &dyn->vp.viewports[0];
-   const VkRect2D *sc = &dyn->vp.scissors[0];
-
-   /* The viewport rectangle clipped by the scissor (panvk v11
-    * prepare_vp); the hardware clips to the box. */
-   int minx = (int)vp->x;
-   int maxx = (int)(vp->x + vp->width);
-   int miny = (int)MIN2(vp->y, vp->y + vp->height);
-   int maxy = (int)MAX2(vp->y, vp->y + vp->height);
-   minx = MAX2(sc->offset.x, minx);
-   miny = MAX2(sc->offset.y, miny);
-   maxx = MIN2(sc->offset.x + (int)sc->extent.width, maxx);
-   maxy = MIN2(sc->offset.y + (int)sc->extent.height, maxy);
-   maxx = maxx > minx ? maxx - 1 : maxx;
-   maxy = maxy > miny ? maxy - 1 : maxy;
-
-   struct mali_scissor_packed s;
-   pan_pack(&s, SCISSOR, cfg) {
-      cfg.scissor_minimum_x = CLAMP(minx, 0, UINT16_MAX);
-      cfg.scissor_minimum_y = CLAMP(miny, 0, UINT16_MAX);
-      cfg.scissor_maximum_x = CLAMP(maxx, 0, UINT16_MAX);
-      cfg.scissor_maximum_y = CLAMP(maxy, 0, UINT16_MAX);
-   }
-   return s.opaque[0] | (uint64_t)s.opaque[1] << 32;
-}
-
 /* ---------------------------------------------------------------------- */
 /* Draw                                                                    */
-
-/* Dynamic states this driver reads at draw time, per register group. */
-static void
-collect_dynamic_dirty(struct mali_cmd_buffer *cmd)
-{
-   struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
-   struct mali_gfx_draw_state *d = &cmd->gfx.draw;
-
-   if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_VIEWPORTS) ||
-       BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_SCISSORS)) {
-      d->dirty |= MALI_GFX_DIRTY_VIEWPORT | MALI_GFX_DIRTY_VS_FAU;
-   }
-   if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_CB_BLEND_CONSTANTS))
-      d->dirty |= MALI_GFX_DIRTY_BLEND | MALI_GFX_DIRTY_FS_FAU;
-   if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_RS_LINE_WIDTH))
-      d->dirty |= MALI_GFX_DIRTY_PIPELINE;
-   if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VI) ||
-       BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VI_BINDING_STRIDES) ||
-       BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VI_BINDINGS_VALID))
-      d->dirty |= MALI_GFX_DIRTY_VS_SRT;
-   if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_INPUT_ATTACHMENT_MAP))
-      d->dirty |= MALI_GFX_DIRTY_FS_FAU;
-   if (d->pipeline && d->pipeline->bind.dynamic) {
-      /* Words baked from state the pipeline left dynamic: repack. */
-      d->dirty |= MALI_GFX_DIRTY_PIPELINE | MALI_GFX_DIRTY_ZSD | MALI_GFX_DIRTY_BLEND |
-                  MALI_GFX_DIRTY_FS_FAU;
-   }
-   vk_dynamic_graphics_state_clear_dirty(dyn);
-}
-
-static enum mali_index_type
-index_type(uint32_t size)
-{
-   switch (size) {
-   case 1: return MALI_INDEX_TYPE_UINT8;
-   case 2: return MALI_INDEX_TYPE_UINT16;
-   case 4: return MALI_INDEX_TYPE_UINT32;
-   default: return MALI_INDEX_TYPE_NONE;
-   }
-}
 
 /* Bit 55 of RUN_IDVS; the on-device smoke test clears it once to check
  * what it does. */
@@ -1032,123 +290,60 @@ emit_ubo_push(struct mali_cmd_buffer *cmd, struct idvs_batch *e, const struct ma
    cmd->gfx.render.ubo_stores = true;
 }
 
-struct draw_info {
-   uint32_t count;
-   uint32_t instance_count;
-   uint32_t first_index;       /* indexed only */
-   int32_t vertex_offset;      /* firstVertex or vertexOffset */
-   uint32_t first_instance;
-   bool indexed;
-};
-
+/* The draw's state (mali_cmd_state.h, "A draw's state"): the shared
+ * builders for every dirty group, each word moved into its IDVS staging
+ * register as it is built. */
 static bool
-prepare_draw(struct mali_cmd_buffer *cmd, const struct draw_info *di, struct idvs_batch *e)
+prepare_draw(struct mali_cmd_buffer *cmd, const struct mali_draw_info *di, struct idvs_batch *e)
 {
    struct mali_gfx_draw_state *d = &cmd->gfx.draw;
    struct mali_render_state *r = &cmd->gfx.render;
    struct mali_graphics_pipeline *p = d->pipeline;
    const struct mali_gfx_bind *bd = &p->bind;
    const struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   const struct mali_gfx_baked *dbk;
+   uint64_t v;
 
-   collect_dynamic_dirty(cmd);
-
-   if (!mali_cmd_render_tiler(cmd))
+   if (!mali_gfx_update_dirty(cmd, di, &dbk))
       return false;
 
-   const struct mali_gfx_baked *dbk = NULL;
-   if (unlikely(bd->dynamic)) {
-      if (d->dirty & MALI_GFX_DIRTY_PIPELINE) {
-         const struct mali_gfx_pack_input in = {
-            .dyn = dyn,
-            .rp = &p->rp,
-            .vs = p->vs,
-            .fs = p->fs,
-         };
-         d->dyn_baked.uses_dynamic_state = true;
-         mali_gfx_pack_state(&in, &d->dyn_baked);
-      }
-      dbk = &d->dyn_baked;
-   }
-
-   if (d->first_vertex != di->vertex_offset && bd->vs_first_vertex)
-      d->dirty |= MALI_GFX_DIRTY_VS_FAU;
-   if (d->base_instance != di->first_instance) {
-      d->dirty |= MALI_GFX_DIRTY_VS_SRT;
-      if (bd->vs_base_instance)
-         d->dirty |= MALI_GFX_DIRTY_VS_FAU;
-   }
-   d->first_vertex = di->vertex_offset;
-   d->base_instance = di->first_instance;
-
-   /* Descriptor sets bound since a stage's table was built. */
-   if (d->vs_sets_dirty & bd->vs_sets)
-      d->dirty |= MALI_GFX_DIRTY_VS_SRT;
-   if (d->fs_sets_dirty & bd->fs_sets)
-      d->dirty |= MALI_GFX_DIRTY_FS_SRT;
-   /* A fragment shader with uniform-buffer words in FAU needs them again
-    * whenever its sets or dynamic offsets change. */
-   if ((d->dirty & MALI_GFX_DIRTY_FS_SRT) && p->fs && p->fs->fau.ubo_push_count)
-      d->dirty |= MALI_GFX_DIRTY_FS_FAU;
-
-   r->tls_size = MAX2(r->tls_size, bd->tls_size);
-
-   /* Blend first: the fragment FAU carries its internal words. */
    if (d->dirty & MALI_GFX_DIRTY_BLEND) {
-      uint32_t n = 0;
-      uint64_t bl = build_blend(cmd, &n);
-      if (!bl)
+      if (!mali_gfx_build_blend(cmd, &v))
          return false;
-      batch_move64(e, IDVS(BLEND_DESC), bl | n);
-      d->dirty |= MALI_GFX_DIRTY_FS_FAU;
+      batch_move64(e, IDVS(BLEND_DESC), v);
    }
 
    struct mali_graphics_sysvals sv;
    if (d->dirty & (MALI_GFX_DIRTY_VS_FAU | MALI_GFX_DIRTY_FS_FAU))
-      fill_sysvals(cmd, &sv);
+      mali_gfx_fill_sysvals(cmd, &sv);
 
    if (d->dirty & MALI_GFX_DIRTY_VS_FAU) {
-      uint64_t fau = mali_cmd_gfx_fau(cmd, p->vs, &sv, cmd->push_constants,
-                                      sizeof(cmd->push_constants));
-      if (p->vs->fau.total_count && !fau)
+      if (!mali_gfx_build_vs_fau(cmd, &sv, &v))
          return false;
-      batch_move64(e, IDVS(FAU_0), fau);
+      batch_move64(e, IDVS(FAU_0), v);
    }
    if (d->dirty & MALI_GFX_DIRTY_FS_FAU) {
-      uint64_t fau = p->fs ? mali_cmd_gfx_fau(cmd, p->fs, &sv, cmd->push_constants,
-                                              sizeof(cmd->push_constants)) : 0;
-      if (p->fs && p->fs->fau.total_count && !fau)
+      if (!mali_gfx_build_fs_fau(cmd, &sv, &v))
          return false;
       /* Straight into the stream, ahead of the batched moves and RUN_IDVS. */
       if (p->fs && p->fs->fau.ubo_push_count)
-         emit_ubo_push(cmd, e, p->fs, fau & BITFIELD64_MASK(56));
-      batch_move64(e, IDVS(FAU_2), fau);
+         emit_ubo_push(cmd, e, p->fs, v & BITFIELD64_MASK(56));
+      batch_move64(e, IDVS(FAU_2), v);
    }
    if (d->dirty & MALI_GFX_DIRTY_VS_SRT) {
-      uint64_t srt = build_vs_srt(cmd);
-      if (!srt)
+      if (!mali_gfx_build_vs_srt(cmd, &v))
          return false;
-      batch_move64(e, IDVS(SRT_0), srt);
-      d->vs_srt_key = bd->vs_srt_key;
-      d->vs_sets_dirty = 0;
+      batch_move64(e, IDVS(SRT_0), v);
    }
    if (d->dirty & MALI_GFX_DIRTY_FS_SRT) {
-      uint64_t srt = p->fs ? build_fs_srt(cmd) : 0;
-      if (p->fs && !srt)
+      if (!mali_gfx_build_fs_srt(cmd, &v))
          return false;
-      batch_move64(e, IDVS(SRT_2), srt);
-      d->fs_srt_key = bd->fs_srt_key;
-      d->fs_sets_dirty = 0;
+      batch_move64(e, IDVS(SRT_2), v);
    }
    if (d->dirty & MALI_GFX_DIRTY_ZSD) {
-      uint64_t zsd = bd->zsd;
-      if (!zsd) {
-         struct mali_ptr z = mali_cmd_alloc(cmd, sizeof(dbk->zsd), 32);
-         if (!z.cpu)
-            return false;
-         memcpy(z.cpu, dbk->zsd, sizeof(dbk->zsd));
-         zsd = z.gpu;
-      }
-      batch_move64(e, IDVS(ZSD), zsd);
+      if (!mali_gfx_build_zsd(cmd, dbk, &v))
+         return false;
+      batch_move64(e, IDVS(ZSD), v);
    }
    if (d->dirty & MALI_GFX_DIRTY_PIPELINE) {
       bool lines;
@@ -1180,7 +375,7 @@ prepare_draw(struct mali_cmd_buffer *cmd, const struct draw_info *di, struct idv
    }
    if (d->dirty & MALI_GFX_DIRTY_VIEWPORT) {
       const VkViewport *vp = &dyn->vp.viewports[0];
-      batch_move64(e, IDVS(SCISSOR_BOX), scissor_box(cmd));
+      batch_move64(e, IDVS(SCISSOR_BOX), mali_gfx_scissor_box(cmd));
       batch_move32(e, IDVS(LOW_DEPTH_CLAMP), fui(MIN2(vp->minDepth, vp->maxDepth)));
       batch_move32(e, IDVS(HIGH_DEPTH_CLAMP), fui(MAX2(vp->minDepth, vp->maxDepth)));
    }
@@ -1199,7 +394,7 @@ prepare_draw(struct mali_cmd_buffer *cmd, const struct draw_info *di, struct idv
 }
 
 static void
-draw(struct mali_cmd_buffer *cmd, const struct draw_info *di)
+draw(struct mali_cmd_buffer *cmd, const struct mali_draw_info *di)
 {
    struct mali_gfx_draw_state *d = &cmd->gfx.draw;
    struct mali_render_state *r = &cmd->gfx.render;
@@ -1232,7 +427,7 @@ draw(struct mali_cmd_buffer *cmd, const struct draw_info *di)
 
    struct mali_primitive_flags_packed ovr;
    pan_pack_nodefaults(&ovr, PRIMITIVE_FLAGS, cfg) {
-      cfg.index_type = di->indexed ? index_type(d->ib.index_size) : MALI_INDEX_TYPE_NONE;
+      cfg.index_type = di->indexed ? mali_gfx_index_type(d->ib.index_size) : MALI_INDEX_TYPE_NONE;
    }
 
    /* Per-draw timing ("draws" mode). */
@@ -1278,7 +473,7 @@ MALI_PER_ARCH(CmdDraw)(VkCommandBuffer commandBuffer, uint32_t vertexCount, uint
                        uint32_t firstVertex, uint32_t firstInstance)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
-   const struct draw_info di = {
+   const struct mali_draw_info di = {
       .count = vertexCount,
       .instance_count = instanceCount,
       .vertex_offset = (int32_t)firstVertex,
@@ -1293,7 +488,7 @@ MALI_PER_ARCH(CmdDrawIndexed)(VkCommandBuffer commandBuffer, uint32_t indexCount
                               uint32_t firstInstance)
 {
    VK_FROM_HANDLE(mali_cmd_buffer, cmd, commandBuffer);
-   const struct draw_info di = {
+   const struct mali_draw_info di = {
       .count = indexCount,
       .instance_count = instanceCount,
       .first_index = firstIndex,

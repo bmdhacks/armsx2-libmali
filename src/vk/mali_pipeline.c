@@ -486,7 +486,7 @@ stage_sets(const struct mali_shader *s)
    return (uint16_t)m;
 }
 
-/* Everything build_vs_srt (mali_cmd_draw.c) reads from the pipeline side,
+/* Everything mali_gfx_vs_srt (mali_cmd_state.h) reads from the pipeline side,
  * with unused entries zero. */
 struct vs_srt_key {
    struct mali_shader_desc_info desc;
@@ -500,7 +500,7 @@ struct vs_srt_key {
    } binding[MESA_VK_MAX_VERTEX_BINDINGS];
 };
 
-/* Everything build_fs_srt reads from the pipeline side. */
+/* Everything mali_gfx_fs_srt reads from the pipeline side. */
 struct fs_srt_key {
    uint32_t has_fs;
    struct mali_shader_desc_info desc;

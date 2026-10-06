@@ -142,9 +142,11 @@ libmali_vk = static_library(
   # Command buffers, the CSF queue, submit and sync.
   files('vk/mali_cmd_buffer.c', 'vk/mali_cmd_copy.c', 'vk/mali_cmd_dispatch.c',
         'vk/mali_queue.c', 'vk/mali_sync.c'),
-  # Render passes, draws, image transfers.
+  # Render passes, draws, image transfers. mali_cmd_state.c and mali_fb.c
+  # (with mali_cmd_state.h) are the parts the job-manager back half will
+  # share.
   files('vk/mali_cmd_draw.c', 'vk/mali_cmd_image.c', 'vk/mali_cmd_meta_gfx.c',
-        'vk/mali_cmd_render.c'),
+        'vk/mali_cmd_render.c', 'vk/mali_cmd_state.c', 'vk/mali_fb.c'),
   # Blend shaders.
   files('vk/mali_blend.c'),
   # Sync files and the Android window system; mali_android.c only on Android.

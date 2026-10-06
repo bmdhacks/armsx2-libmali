@@ -446,7 +446,7 @@ pack_blend(const struct mali_gfx_pack_input *in, struct mali_gfx_baked *out)
 
       /* Fixed-function blending has one constant per draw (v7+ take it from
        * render target 0); whether the channels used agree depends on the
-       * dynamic blend constants, so the draw (mali_cmd_draw.c build_blend)
+       * dynamic blend constants, so the draw (mali_cmd_state.h mali_gfx_blend)
        * checks and falls back to a blend shader then. */
       out->needs_blend_shader |= rt->mode == MALI_BLEND_RT_SHADER;
    }

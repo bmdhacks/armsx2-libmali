@@ -6,10 +6,12 @@
 /*
  * Render passes and draws: what the command buffer keeps about the
  * current render pass and the graphics state, and the internal interfaces
- * between mali_cmd_render.c (passes, framebuffer and tiler descriptors,
- * fragment jobs), mali_cmd_draw.c (binds, draws, full-screen draws) and
- * mali_cmd_meta_gfx.c (internal fragment shaders for preloads, clears and
- * blits).
+ * between mali_fb.c (pass layout, framebuffer descriptors, frame shaders),
+ * mali_cmd_state.[ch] (binds, the per-draw descriptor builders and dirty
+ * bits), mali_cmd_render.c (tiler descriptors, fragment jobs),
+ * mali_cmd_draw.c (draws, full-screen draws) and mali_cmd_meta_gfx.c
+ * (internal fragment shaders for preloads, clears and blits). The first
+ * two are shared with the job-manager back half.
  */
 
 #ifndef MALI_CMD_GFX_H
@@ -112,7 +114,7 @@ struct mali_render_state {
 
    /* Transaction elimination: the colour target whose CRCs the pass
     * keeps (-1: none) and the low word of its CRC Clear Color without the
-    * seed (build_fbds). */
+    * seed (mali_fb_build). */
    int crc_rt;
    uint32_t crc_clear_lo;
 
@@ -188,7 +190,7 @@ struct mali_gfx_draw_state {
 };
 
 /* ---------------------------------------------------------------------- */
-/* mali_cmd_render.c                                                       */
+/* mali_cmd_render.c (the back half's render pass; JM: mali_jm_cmd_render.c) */
 
 /* Start a render pass instance. rt/z/s images must be bound. */
 void mali_cmd_render_begin(struct mali_cmd_buffer *cmd, const struct mali_render_desc *desc);
@@ -200,8 +202,47 @@ void mali_cmd_render_end(struct mali_cmd_buffer *cmd);
  * command buffer has the error). */
 bool mali_cmd_render_tiler(struct mali_cmd_buffer *cmd);
 
+/* ---------------------------------------------------------------------- */
+/* mali_fb.c: the frontend-neutral part of a render pass                   */
+
+/*
+ * The start of a pass: resets gfx.render to desc, picks the tile size and
+ * tile-buffer layout, the bounding box, and which targets the frame
+ * shaders preload (loads, and border loads of partly covered tiles); marks
+ * every draw state group dirty. True when some target is preloaded: the
+ * back half then makes earlier attachment writes visible to the texture
+ * unit.
+ */
+bool mali_fb_begin(struct mali_cmd_buffer *cmd, const struct mali_render_desc *desc);
+
+/* Whether the pass needs fragment work: it tiled something, or a stored
+ * target is cleared or always written. */
+bool mali_fb_pass_has_work(const struct mali_render_state *r);
+
+/*
+ * The pass's framebuffer descriptors, one per layer, each followed by its
+ * ZS/CRC extension (when there is depth, stencil or a CRC target) and its
+ * render targets; the frame shaders' Draw descriptors. Chooses the CRC
+ * target (r->crc_rt, r->crc_clear_lo: the CRC Clear Color's low word
+ * without the seed, which the back half fills in). The tiler pointer of
+ * layer l is r->tiler + (l / MALI_LAYERS_PER_TILER_CTX) Tiler Contexts.
+ * Returns the first descriptor's address tagged for the fragment job's
+ * FBD pointer and *size_out the size of one layer's descriptors; 0 on
+ * failure.
+ */
+uint64_t mali_fb_build(struct mali_cmd_buffer *cmd, struct mali_render_state *r,
+                       uint32_t *size_out);
+
+/* Fills the pass's Local Storage descriptor (allocated by
+ * mali_fb_alloc_tsd, mali_cmd_state.h): TLS for the largest per-thread
+ * need of the pass's shaders, no workgroup memory. */
+void mali_fb_fill_tsd(struct mali_cmd_buffer *cmd, struct mali_render_state *r);
+
+/* ---------------------------------------------------------------------- */
+/* mali_cmd_state.c                                                        */
+
 /* The per-thread TLS buffer of the command buffer, grown to at least
- * tls_size bytes per thread (mali_cmd_dispatch.c). 0 on failure. */
+ * tls_size bytes per thread. 0 on failure. */
 uint64_t mali_cmd_tls_buffer(struct mali_cmd_buffer *cmd, uint32_t tls_size);
 
 /*
@@ -216,7 +257,8 @@ uint64_t mali_cmd_tls_buffer(struct mali_cmd_buffer *cmd, uint32_t tls_size);
  */
 void mali_cmd_crc_invalidate(struct mali_cmd_buffer *cmd, const struct mali_image *image);
 
-/* Knobs for the device CRC test; the driver runs with the defaults. */
+/* Knobs for the device CRC test; the driver runs with the defaults
+ * (mali_fb.c). */
 struct mali_crc_options {
    bool disable;               /* no CRC at all */
    bool skip_copy_invalidate;  /* tests only: copies leave the CRC valid */
@@ -227,20 +269,12 @@ struct mali_crc_options {
 extern struct mali_crc_options mali_crc_options;
 
 /* A render-target Blend descriptor's words for a colour target (the
- * internal part the fragment shader's BLEND instruction reads). */
+ * internal part the fragment shader's BLEND instruction reads;
+ * mali_fb.c). */
 void mali_pack_opaque_blend(enum pipe_format format, unsigned rt, uint32_t out[4]);
-
-/* ---------------------------------------------------------------------- */
-/* mali_cmd_draw.c                                                         */
-
-/* Set RUN_IDVS bit 55 (default true; tests only change it). */
-extern bool mali_idvs_bit55;
 
 /* vkCmdBindPipeline for a graphics pipeline. */
 void mali_cmd_bind_graphics(struct mali_cmd_buffer *cmd, struct mali_graphics_pipeline *p);
-
-/* A primitive barrier inside the render pass (by-region dependencies). */
-void mali_cmd_fb_barrier(struct mali_cmd_buffer *cmd);
 
 /* The FAU block of a graphics-stage shader: its used sysval words, then
  * its used push-constant words, then promoted constants. `sysvals` is a
@@ -248,6 +282,15 @@ void mali_cmd_fb_barrier(struct mali_cmd_buffer *cmd);
  * count in bits 56+, or 0 on failure / no FAU. */
 uint64_t mali_cmd_gfx_fau(struct mali_cmd_buffer *cmd, const struct mali_shader *s,
                           const void *sysvals, const void *push, uint32_t push_size);
+
+/* ---------------------------------------------------------------------- */
+/* mali_cmd_draw.c                                                         */
+
+/* Set RUN_IDVS bit 55 (default true; tests only change it). */
+extern bool mali_idvs_bit55;
+
+/* A primitive barrier inside the render pass (by-region dependencies). */
+void mali_cmd_fb_barrier(struct mali_cmd_buffer *cmd);
 
 /*
  * A full-screen fragment draw on the vertex/tiler subqueue: RUN_FULLSCREEN
