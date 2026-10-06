@@ -10,7 +10,8 @@
  *
  * - Allocations use MEM_ALLOC_EX; flags are normalized first (the output
  *   bit NEED_MMAP is dropped, GPU_EX implies GPU_RD) and get the memory
- *   group of their class in bits 22..25.
+ *   group of their class in bits 22..25 (group 0 for every class on the
+ *   job manager).
  * - SAME_VA allocations come back as a cookie; mmap at offset = cookie
  *   gives the memory its address, CPU and GPU alike. Such a region is
  *   freed by munmap alone. Everything else is freed with MEM_FREE.
@@ -250,7 +251,11 @@ mali_kbase_alloc(struct mali_kbase *kb, const struct mali_kbase_alloc_info *info
       return MALI_KBASE_ERROR_INVALID_ARGUMENT;
    if (info->mem_class != MALI_KBASE_MEM_CLASS_NONE) {
       flags &= ~KB_MEM_GROUP_ID_MASK;
-      flags |= KB_MEM_GROUP_ID(mali_kbase_mem_class_group(info->mem_class));
+      /* The job-manager devices (Unisoc) have no memory group manager:
+       * every class goes to group 0 until the T820 blob's class table is
+       * decoded. */
+      if (kb->frontend != MALI_KBASE_FRONTEND_JM)
+         flags |= KB_MEM_GROUP_ID(mali_kbase_mem_class_group(info->mem_class));
    }
 
    if (kb->frontend == MALI_KBASE_FRONTEND_JM)
