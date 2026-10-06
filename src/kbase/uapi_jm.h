@@ -57,6 +57,12 @@
  * never set (kbase-r40p0-vs-r44p1.md §5, jm-driver-needs.md §2.7). */
 #define KB_MEM_JM_RESERVED (KB_MEM_FIXED | KB_MEM_CSF_EVENT)
 
+/* BASEP_MEM_FLAGS_KERNEL_ONLY of the job-manager kernel: bits 5
+ * (PERMANENT_KERNEL_MAPPING), 7 (NO_USER_FREE), 27 (FLAG_MAP_FIXED) and
+ * 29 (PERFORM_JIT_TRIM). MEM_ALLOC refuses them. */
+#define KB_MEM_JM_KERNEL_ONLY \
+   ((1ull << 5) | (1ull << 7) | (1ull << 27) | (1ull << 29))
+
 /* BASE_MEM_TILER_ALIGN_TOP: memory past the initial commit is aligned to
  * an `extension`-page boundary (job-manager only; the equivalent on CSF
  * memory is simply not offered). */

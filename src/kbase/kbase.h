@@ -112,8 +112,8 @@ const struct mali_kbase_backend *mali_kbase_os_backend(void);
 
 /*
  * One field per kbase property key we keep (uapi.h, enum kb_gpuprop_key).
- * Keys the kernel sends that we do not keep (the job-manager JS_FEATURES,
- * anything newer) are skipped, as the blob skips unknown keys.
+ * Keys the kernel sends that we do not keep (JS_FEATURES of slots past the
+ * third, anything newer) are skipped, as the blob skips unknown keys.
  */
 struct mali_kbase_gpu_props {
    /* core */
@@ -261,8 +261,13 @@ struct mali_kbase {
    /* The GPU's user register page, mapped read-only. CSF only; NULL on JM. */
    const volatile uint32_t *user_reg_page;
    /* The job-manager tracking-page mapping (BASE_MEM_MAP_TRACKING_HANDLE),
-    * kept only so mali_kbase_destroy can munmap it. CSF only; NULL on JM. */
+    * kept only so mali_kbase_destroy can munmap it. Job manager only; NULL
+    * on CSF. */
    void *jm_tracking_page;
+   /* SET_FLAGS succeeded: the kernel context exists. */
+   bool context_created;
+   /* mali_kbase_abandon was called. */
+   bool abandoned;
    mali_kbase_log_fn log;
    void *log_user;
    struct mali_kbase_stats stats;
@@ -297,6 +302,18 @@ mali_kbase_create(const struct mali_kbase_create_info *info,
 /* Free every allocation first: SAME_VA memory keeps the kernel context
  * alive until its CPU mapping is gone. */
 void mali_kbase_destroy(struct mali_kbase *kb);
+
+/*
+ * The GPU may still be running work that uses this context's memory and
+ * user space cannot stop it (job-manager atoms that never completed). From
+ * now on mali_kbase_free leaves every region and its mapping in place, and
+ * mali_kbase_destroy closes the fd without unmapping anything. The
+ * mappings keep the kernel context alive until the process exits; the
+ * kernel then stops the context's jobs before it frees their memory,
+ * instead of the jobs faulting on memory freed under them. Leaks the
+ * context's memory until then.
+ */
+void mali_kbase_abandon(struct mali_kbase *kb);
 
 /* LATEST_FLUSH from the user register page (the flush ID FLUSH_CACHE2
  * compares against). */
@@ -519,8 +536,8 @@ unsigned mali_kbase_jm_atom_ids_free_count(const struct mali_kbase_jm_atom_ids *
 /*
  * JOB_SUBMIT: submits exactly the atoms the caller built (dependencies,
  * core_req, atom numbers already filled in; this layer does not interpret
- * them). More than 256 atoms, the kernel's limit per ioctl call
- * (jm-driver-needs.md §2.2), are split across as many JOB_SUBMIT calls as
+ * them). More than 256 atoms, the T820 kernel's limit per ioctl call (jm.c
+ * says why), are split across as many JOB_SUBMIT calls as
  * needed; nothing else is done between them (no per-edge round trip, see
  * g57-backend.md §9.1/§4.5 — the whole dependency graph is submitted with
  * pre_dep already resolved by the caller). n may be 0 (no-op).

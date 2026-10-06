@@ -139,6 +139,17 @@ jm_check_alloc(uint64_t flags, uint64_t commit_pages, uint64_t extension)
 {
    if (flags & KB_MEM_JM_RESERVED)
       return "bit 8 or 19 is reserved on a job-manager context";
+   if (flags & KB_MEM_JM_KERNEL_ONLY)
+      return "bit 5, 7, 27 or 29 is for the kernel's own allocations";
+   if (!(flags & (KB_MEM_PROT_GPU_RD | KB_MEM_PROT_GPU_WR)))
+      return "no GPU access";
+   if (!(flags & (KB_MEM_PROT_CPU_RD | KB_MEM_PROT_GPU_RD)))
+      return "neither CPU nor GPU reads it";
+   if (!(flags & (KB_MEM_PROT_CPU_WR | KB_MEM_PROT_GPU_WR)))
+      return "neither CPU nor GPU writes it";
+   if ((flags & KB_MEM_GPU_VA_SAME_4GB_PAGE) &&
+       (flags & (KB_MEM_PROT_GPU_EX | KB_MEM_TILER_ALIGN_TOP)))
+      return "SAME_4GB_PAGE with GPU_EX or TILER_ALIGN_TOP";
    if ((flags & KB_MEM_PROT_GPU_EX) &&
        (flags & (KB_MEM_PROT_GPU_WR | KB_MEM_GROW_ON_GPF | KB_MEM_TILER_ALIGN_TOP)))
       return "GPU_EX with GPU_WR, GROW_ON_GPF or TILER_ALIGN_TOP";
@@ -350,6 +361,11 @@ mali_kbase_free(struct mali_kbase *kb, struct mali_kbase_bo *bo)
 {
    if (!kb || !bo || bo->size == 0)
       return;
+   if (kb->abandoned) {
+      /* mali_kbase_abandon: the GPU may still use it. */
+      memset(bo, 0, sizeof(*bo));
+      return;
+   }
 
    if (bo->attrs & MALI_KBASE_BO_STICKY) {
       long ret = sticky(kb, KB_IOCTL_STICKY_RESOURCE_UNMAP, bo->gpu_va);

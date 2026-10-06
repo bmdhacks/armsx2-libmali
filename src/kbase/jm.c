@@ -91,7 +91,11 @@ mali_kbase_jm_atom_ids_free_count(const struct mali_kbase_jm_atom_ids *ids)
 /* ---------------------------------------------------------------------- */
 /* Submission                                                              */
 
-/* The kernel's own cap on one JOB_SUBMIT call (jm-driver-needs.md §2.2). */
+/* At most 256 atoms per JOB_SUBMIT call. Stock kbase has no per-call
+ * limit, but the T820's kernel (Unisoc's kbase_jd_submit) records the
+ * number of every atom of one call in a fixed array of 256 entries,
+ * without a bounds check: a longer call would write past the array into
+ * kernel memory. Do not raise this. */
 #define MALI_KBASE_JM_MAX_ATOMS_PER_SUBMIT 256
 
 enum mali_kbase_result

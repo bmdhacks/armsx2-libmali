@@ -65,13 +65,13 @@ open_device(struct mali_kbase *kb, const char *path)
  * tracking page), so an older kernel is refused here, loudly, instead of
  * failing later in some ioctl.
  *
- * If that check does not come back as exactly 1.20 (including EPERM: a
- * job-manager kernel reserves this ioctl number and answers it with
- * kbase_api_handshake_dummy, g57-backend.md §3), we try the job-manager
- * handshake instead, on the same fd: VERSION_CHECK ioctl 0 proposing
- * 11.36. Each frontend's kernel answers the other's version-check number
- * with EPERM without touching the file's setup state, so this second
- * check is valid. We accept only exactly 11.36 back, the same "kernel at
+ * If that check fails with EPERM, the kernel is a job-manager one: it
+ * reserves this ioctl number and answers it with EPERM without touching
+ * the file's setup state. Only then do we try the job-manager handshake,
+ * on the same fd: VERSION_CHECK ioctl 0 proposing 11.36. A CSF kernel
+ * that answers with another version, or a failure other than EPERM, is
+ * refused at once, as before there was a job-manager path, so a CSF
+ * device sees exactly the ioctls it always did. We accept only exactly 11.36 back, the same "kernel at
  * this minor or newer" pin as the CSF side (the kernel answers
  * min(ours, its own) for a matching major). Only one of kb->uk_major/minor
  * and kb->frontend is meaningful once this returns success; the other
@@ -91,14 +91,22 @@ version_handshake(struct mali_kbase *kb)
       kb->uk_minor = vc.minor;
       return MALI_KBASE_SUCCESS;
    }
+   if (ret < 0 && ret != -EPERM) {
+      KB_LOG(kb, "refusing device: VERSION_CHECK (CSF ioctl 52) failed: %s; "
+                 "not a CSF kbase kernel?",
+             strerror((int)-ret));
+      return MALI_KBASE_ERROR_INCOMPATIBLE_KERNEL;
+   }
+   if (ret >= 0) {
+      KB_LOG(kb, "refusing device: kernel answered UK %u.%u, this driver "
+                 "speaks only UK %u.%u (kbase r44p1)",
+             vc.major, vc.minor, KB_UK_VERSION_MAJOR, KB_UK_VERSION_MINOR);
+      return MALI_KBASE_ERROR_INCOMPATIBLE_KERNEL;
+   }
 
    char csf_detail[80];
-   if (ret < 0)
-      snprintf(csf_detail, sizeof(csf_detail), "CSF VERSION_CHECK (ioctl 52) failed: %s",
-               strerror((int)-ret));
-   else
-      snprintf(csf_detail, sizeof(csf_detail),
-               "CSF VERSION_CHECK (ioctl 52) answered UK %u.%u", vc.major, vc.minor);
+   snprintf(csf_detail, sizeof(csf_detail), "CSF VERSION_CHECK (ioctl 52) failed: %s",
+            strerror((int)-ret));
 
    struct kb_ioctl_version_check jvc = {
       .major = KB_JM_UK_VERSION_MAJOR,
@@ -143,6 +151,7 @@ set_flags(struct mali_kbase *kb, uint32_t mmu_group)
       KB_LOG(kb, "SET_FLAGS 0x%x failed: %s", sf.create_flags, strerror((int)-ret));
       return kb_result_from_errno((int)-ret, KB_ERRNO_GENERIC);
    }
+   kb->context_created = true;
    return MALI_KBASE_SUCCESS;
 }
 
@@ -283,8 +292,9 @@ jit_init(struct mali_kbase *kb)
     * what creates the CUSTOM_VA zone, and the kernel allocates tiler heap
     * contexts and chunks there: without it CS_TILER_HEAP_INIT fails with
     * ENOMEM (found on the RG 477V). It must come before the first
-    * allocation. Group 0: the blob takes it from config option 0x3b,
-    * whose default is not decoded.
+    * allocation. Group 0. (The G615's blob takes the group from its
+    * config option 0x3b, the T820's job-manager blob from its option 0x36;
+    * neither default is known.)
     *
     * On a job-manager context we issue it for the same reason the CSF
     * side does (it costs only a VA reservation, and keeps the context set
@@ -311,16 +321,17 @@ jit_init(struct mali_kbase *kb)
 static void
 release(struct mali_kbase *kb)
 {
-   if (kb->frontend == MALI_KBASE_FRONTEND_JM && kb->fd >= 0) {
-      /* Best effort: a context that failed setup before SET_FLAGS has
-       * nothing to terminate, and a failure here does not change that we
-       * are about to close the fd anyway. */
+   if (kb->frontend == MALI_KBASE_FRONTEND_JM && kb->context_created) {
+      /* Best effort: a failure here does not change that we are about to
+       * close the fd anyway. Without SET_FLAGS there is no context to
+       * terminate (the kernel would answer EPERM). */
       enum mali_kbase_result r = mali_kbase_jm_post_term(kb);
       if (r != MALI_KBASE_SUCCESS)
          KB_LOG(kb, "POST_TERM during teardown failed (ignored): %s",
                 mali_kbase_result_str(r));
    }
-   if (kb->jm_tracking_page)
+   /* An abandoned context keeps every mapping (mali_kbase_abandon). */
+   if (kb->jm_tracking_page && !kb->abandoned)
       kb->backend->munmap(kb->backend->priv, kb->jm_tracking_page, KB_PAGE_SIZE);
    if (kb->user_reg_page)
       kb->backend->munmap(kb->backend->priv, (void *)kb->user_reg_page, KB_PAGE_SIZE);
@@ -390,6 +401,13 @@ mali_kbase_destroy(struct mali_kbase *kb)
 {
    if (kb)
       release(kb);
+}
+
+void
+mali_kbase_abandon(struct mali_kbase *kb)
+{
+   if (kb)
+      kb->abandoned = true;
 }
 
 uint32_t

@@ -12,9 +12,19 @@
 #include "util/macros.h"
 #include "util/u_math.h"
 
-/* 16 MiB: kbase refuses a GPU_EX allocation larger than the program
- * counter range, 2^24 bytes on the G615. */
+/* The largest shader-code allocation: 16 MiB, or less if the GPU's
+ * program counter range (2^LOG2_PROGRAM_COUNTER_SIZE bytes, which kbase
+ * enforces for GPU_EX allocations) is smaller. 2^24 on the G615. */
 #define MALI_EXEC_MAX_ALLOC (16ull << 20)
+
+static uint64_t
+exec_max_alloc(const struct mali_kbase *kb)
+{
+   const uint32_t log2 = kb->props.log2_program_counter_size;
+   if (log2 && log2 < 24)
+      return 1ull << log2;
+   return MALI_EXEC_MAX_ALLOC;
+}
 /* Slab sizes. ARMSX2 builds a few hundred pipelines of a few KiB each. */
 #define MALI_EXEC_SLAB_SIZE (1ull << 20)
 #define MALI_DESC_SLAB_SIZE (256ull << 10)
@@ -42,8 +52,8 @@ mali_bo_pool_init_exec(struct mali_bo_pool *pool, struct mali_kbase *kb)
 {
    /* No SAME_VA: GPU_EX memory must land in the executable zone. */
    mali_bo_pool_init(pool, kb, "exec", MALI_KBASE_FLAGS_PROGRAM,
-                     MALI_KBASE_MEM_CLASS_PROGRAM, MALI_EXEC_SLAB_SIZE,
-                     MALI_EXEC_MAX_ALLOC, true);
+                     MALI_KBASE_MEM_CLASS_PROGRAM, MIN2(MALI_EXEC_SLAB_SIZE, exec_max_alloc(kb)),
+                     exec_max_alloc(kb), true);
 }
 
 void
