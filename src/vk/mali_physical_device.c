@@ -21,6 +21,8 @@
 #include "util/mesa-blake3.h"
 #include "util/u_atomic.h"
 #include "util/u_math.h"
+#include "util/os_misc.h"
+#include "util/os_time.h"
 #include "vk_alloc.h"
 #include "vk_limits.h"
 #include "vk_util.h"
@@ -190,6 +192,30 @@ init_memory(struct mali_physical_device *pdev)
                        VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT,
       .heapIndex = 0,
    };
+}
+
+/*
+ * Available system memory for VK_EXT_memory_budget. VMA asks for the budget
+ * once a frame, and reading /proc/meminfo each time costs several percent
+ * of a light frame, so the value is kept for a second. Two threads may both
+ * refresh it; either result is fine.
+ */
+static uint64_t
+available_memory(struct mali_physical_device *pdev)
+{
+   const uint64_t now = os_time_get_nano();
+   const uint64_t then = p_atomic_read(&pdev->avail_mem_ns);
+   if (then && now - then < 1000000000ull)
+      return p_atomic_read(&pdev->avail_mem);
+
+   /* If it cannot be read, report the whole heap rather than a budget
+    * no larger than our own usage. */
+   uint64_t avail;
+   if (!os_get_available_system_memory(&avail))
+      avail = pdev->memory.memoryHeaps[0].size;
+   p_atomic_set(&pdev->avail_mem, avail);
+   p_atomic_set(&pdev->avail_mem_ns, now);
+   return avail;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -667,8 +693,8 @@ mali_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
           * own usage and never exceeds the heap: min(heap size, usage +
           * available system memory), no margin held back. */
          b->heapUsage[0] = used;
-         b->heapBudget[0] = vk_physical_device_heap_budget_from_system(
-            &pdev->vk, 1.0f, pdev->memory.memoryHeaps[0].size, used);
+         b->heapBudget[0] = vk_physical_device_heap_budget(
+            available_memory(pdev), 1.0f, pdev->memory.memoryHeaps[0].size, used);
          break;
       }
       default:

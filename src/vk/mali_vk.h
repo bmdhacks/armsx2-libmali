@@ -75,6 +75,10 @@ struct mali_physical_device {
     * Atomic: mali_AllocateMemory/mali_FreeMemory touch it without the
     * device lock. */
    uint64_t heap_used;
+   /* The system's available memory for heapBudget, read from the kernel
+    * at most once a second (mali_physical_device.c), and when it was read. */
+   uint64_t avail_mem;
+   uint64_t avail_mem_ns;
 };
 
 VK_DEFINE_HANDLE_CASTS(mali_physical_device, vk.base, VkPhysicalDevice,
