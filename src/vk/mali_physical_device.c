@@ -19,6 +19,7 @@
 #include "util/log.h"
 #include "util/macros.h"
 #include "util/mesa-blake3.h"
+#include "util/u_atomic.h"
 #include "util/u_math.h"
 #include "vk_alloc.h"
 #include "vk_limits.h"
@@ -219,6 +220,16 @@ static const struct vk_device_extension_table mali_device_extensions = {
     * device_extensions_for_arch() below. */
    .EXT_rasterization_order_attachment_access = true,
    .ARM_rasterization_order_attachment_access = true,
+
+   /* ARMSX2 selects Bresenham rasterization on every line pipeline; the
+    * promoted KHR name and the original EXT name are separate table
+    * entries but the same feature and property structs. */
+   .KHR_line_rasterization = true,
+   .EXT_line_rasterization = true,
+
+   /* VMA (ARMSX2's allocator) only asks for a memory budget when this is
+    * listed. */
+   .EXT_memory_budget = true,
 };
 
 /*
@@ -298,6 +309,18 @@ get_features(struct vk_features *f, uint32_t arch)
       .rasterizationOrderColorAttachmentAccess = roaa,
       .rasterizationOrderDepthAttachmentAccess = roaa,
       .rasterizationOrderStencilAttachmentAccess = roaa,
+
+      /* VK_EXT_line_rasterization: the aligned-line-ends DCD bit
+       * (mali_pipeline_state.c) already follows the pipeline's line mode.
+       * Bresenham is what ARMSX2 asks for; the non-Bresenham modes are the
+       * hardware's one fixed algorithm already, which panvk also reports
+       * as rectangular. No smooth (coverage-based) lines, no stipple. */
+      .rectangularLines = true,
+      .bresenhamLines = true,
+      .smoothLines = false,
+      .stippledRectangularLines = false,
+      .stippledBresenhamLines = false,
+      .stippledSmoothLines = false,
    };
 }
 
@@ -424,6 +447,7 @@ get_properties(const struct mali_physical_device *pdev, const char *name,
       .subPixelPrecisionBits = 8,
       .subTexelPrecisionBits = 8,
       .mipmapPrecisionBits = 8,
+      .lineSubPixelPrecisionBits = 8,     /* same as panvk on this hardware */
       .maxDrawIndexedIndexValue = UINT32_MAX,
       .maxDrawIndirectCount = 1,
       .maxSamplerLodBias = 126.0f,
@@ -582,6 +606,30 @@ mali_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
 {
    VK_FROM_HANDLE(mali_physical_device, pdev, physicalDevice);
    pMemoryProperties->memoryProperties = pdev->memory;
+
+   vk_foreach_struct(stype, ext, pMemoryProperties->pNext) {
+      switch (stype) {
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT: {
+         VkPhysicalDeviceMemoryBudgetPropertiesEXT *b = ext;
+         const uint64_t used = p_atomic_read(&pdev->heap_used);
+
+         for (unsigned i = 0; i < VK_MAX_MEMORY_HEAPS; i++) {
+            b->heapBudget[i] = 0;
+            b->heapUsage[i] = 0;
+         }
+         /* One heap (init_memory above). The budget never drops below our
+          * own usage and never exceeds the heap: min(heap size, usage +
+          * available system memory), no margin held back. */
+         b->heapUsage[0] = used;
+         b->heapBudget[0] = vk_physical_device_heap_budget_from_system(
+            &pdev->vk, 1.0f, pdev->memory.memoryHeaps[0].size, used);
+         break;
+      }
+      default:
+         vk_debug_ignored_stype(stype);
+         break;
+      }
+   }
 }
 
 /* ---------------------------------------------------------------------- */
