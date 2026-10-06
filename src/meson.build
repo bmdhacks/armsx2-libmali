@@ -175,7 +175,7 @@ libmali_vk = static_library(
 libmali_vk_v9 = static_library(
   'mali_vk_v9',
   files('vk/mali_jm_cmd_buffer.c', 'vk/mali_jm_queue.c', 'vk/mali_jm_sync_file.c',
-        'vk/mali_sync.c'),
+        'vk/mali_sync.c', 'vk/mali_wsi.c'),
   mali_entrypoints[0],   # the header only; the tables are libmali_vk's
   include_directories : [inc_include, inc_src, inc_libmali, include_directories('vk'),
                          include_directories('measurement')],
