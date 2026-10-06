@@ -275,6 +275,7 @@ MALI_PER_ARCH(fb_begin)(struct mali_cmd_buffer *cmd, const struct mali_render_de
 
    memset(r, 0, sizeof(*r));
    r->active = true;
+   r->first_provoking_vertex = true;
    r->desc = *desc;
    r->rt_count = MAX2(desc->rt_count, 1);
    r->crc_rt = -1;
@@ -855,7 +856,7 @@ MALI_PER_ARCH(fb_build)(struct mali_cmd_buffer *cmd, struct mali_render_state *r
          cfg.tie_break_rule = MALI_TIE_BREAK_RULE_MINUS_180_IN_0_OUT;
          cfg.effective_tile_size = r->tile_size;
          cfg.point_sprite_coord_origin_max_y = false;
-         cfg.first_provoking_vertex = true;
+         cfg.first_provoking_vertex = r->first_provoking_vertex;
          cfg.render_target_count = r->rt_count;
          cfg.color_buffer_allocation = r->cbuf_alloc;
          if (st->image) {

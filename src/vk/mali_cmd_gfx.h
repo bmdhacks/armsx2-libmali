@@ -162,6 +162,14 @@ struct mali_render_state {
    int crc_rt;
    uint32_t crc_clear_lo;
 
+   /* The Tiler Context's and Framebuffer Parameters' First provoking
+    * vertex bit (provokingVertexModePerPipeline is false: one mode for
+    * the whole pass). Taken from the first pipeline bound while the pass
+    * is active (mali_gfx_update_dirty); true, the hardware and Vulkan
+    * default, until one is. */
+   bool first_provoking_vertex;
+   bool first_provoking_vertex_set;
+
    /* Set by the first draw or full-screen draw of the pass. */
    uint64_t tiler;                  /* Tiler Contexts, 0 if nothing tiled */
    void *tiler_cpu;
@@ -272,6 +280,14 @@ MALI_PER_ARCH_DECL(void, cmd_render_end, (struct mali_cmd_buffer *cmd));
  * command buffer has the error). */
 MALI_PER_ARCH_DECL(bool, cmd_render_tiler, (struct mali_cmd_buffer *cmd));
 
+/* Repacks every layer's Tiler Context with the pass's current
+ * first_provoking_vertex: for when a full-screen draw built them (with
+ * the default) before an app pipeline set the pass's mode
+ * (mali_gfx_update_dirty). A no-op write of the same static words the
+ * initial build packed, so it is safe to call again mid-recording. */
+MALI_PER_ARCH_DECL(void, cmd_render_tiler_set_provoking_vertex,
+                   (struct mali_cmd_buffer *cmd));
+
 /* ---------------------------------------------------------------------- */
 /* mali_fb.c: the frontend-neutral part of a render pass                   */
 
@@ -376,6 +392,13 @@ MALI_PER_ARCH_DECL(void, cmd_fb_barrier, (struct mali_cmd_buffer *cmd));
  * of the Draw descriptor `dcd` over `rect` of layers [base_layer,
  * base_layer + layer_count). Clobbers the scissor, tiler flags and tiler
  * context registers; the next draw rewrites them.
+ *
+ * A full-screen draw (clears, the in-pass primitive barrier) has no
+ * vertex shader and no real vertices to begin with -- v11's RUN_FULLSCREEN
+ * and v9's Fullscreen job both run a fixed hardware-generated quad over
+ * the draw descriptor, no vertex fetch, no primitive topology -- so the
+ * pass's provoking-vertex mode never affects one; it only has to read the
+ * same Tiler Context as the pass's real draws.
  */
 MALI_PER_ARCH_DECL(void, cmd_run_fullscreen,
                    (struct mali_cmd_buffer *cmd, uint64_t dcd, const VkRect2D *rect,

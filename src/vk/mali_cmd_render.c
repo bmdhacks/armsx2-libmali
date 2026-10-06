@@ -101,6 +101,36 @@ next_iter_sb(struct mali_cmd_buffer *cmd, struct cs_builder *b)
    cs_set_state(b, MALI_CS_SET_STATE_TYPE_SB_MASK_STREAM, sb_mask);
 }
 
+/*
+ * One Tiler Context's static words: everything but what the stream stores
+ * or zeroes at run time for a command buffer that may run again (the
+ * heap, geometry buffer and polygon list). Takes only data that stays the
+ * same for the pass's lifetime (r->desc, the device's queue), so it can
+ * be called again later to fix up a field without redoing allocation or
+ * drifting from the initial build.
+ */
+static void
+pack_tiler_context(struct mali_cmd_buffer *cmd, const struct mali_render_state *r, uint32_t i,
+                   uint32_t layers, bool once, uint8_t *dst)
+{
+   const struct mali_csf_queue *q = cmd->dev->csf->queue;
+   pan_cast_and_pack(dst, TILER_CONTEXT, cfg) {
+      if (once) {
+         cfg.heap = mali_queue_heap_desc_va(q);
+         cfg.geometry_buffer_size = MALI_TILER_GEOM_BUF_SIZE;
+         cfg.geometry_buffer = mali_queue_geom_buf_va(q);
+      }
+      cfg.hierarchy_mask = MALI_TILER_HIERARCHY_MASK;
+      cfg.sample_pattern = MALI_SAMPLE_PATTERN_SINGLE_SAMPLED;
+      cfg.first_provoking_vertex = r->first_provoking_vertex;
+      cfg.fb_width = r->desc.width;
+      cfg.fb_height = r->desc.height;
+      cfg.layer_count = MIN2(layers - i * MALI_LAYERS_PER_TILER_CTX,
+                             MALI_LAYERS_PER_TILER_CTX);
+      cfg.layer_offset = -(int32_t)(i * MALI_LAYERS_PER_TILER_CTX);
+   }
+}
+
 bool
 MALI_PER_ARCH(cmd_render_tiler)(struct mali_cmd_buffer *cmd)
 {
@@ -124,25 +154,10 @@ MALI_PER_ARCH(cmd_render_tiler)(struct mali_cmd_buffer *cmd)
     * again has the stream below store them and zero the rest before
     * every run. */
    STATIC_ASSERT(MALI_QUEUE_COUNT == 1);
-   const struct mali_csf_queue *q = cmd->dev->csf->queue;
    const bool once = cmd->usage & VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-   for (uint32_t i = 0; i < td_count; i++) {
-      pan_cast_and_pack((uint8_t *)p.cpu + i * pan_size(TILER_CONTEXT), TILER_CONTEXT, cfg) {
-         if (once) {
-            cfg.heap = mali_queue_heap_desc_va(q);
-            cfg.geometry_buffer_size = MALI_TILER_GEOM_BUF_SIZE;
-            cfg.geometry_buffer = mali_queue_geom_buf_va(q);
-         }
-         cfg.hierarchy_mask = MALI_TILER_HIERARCHY_MASK;
-         cfg.sample_pattern = MALI_SAMPLE_PATTERN_SINGLE_SAMPLED;
-         cfg.first_provoking_vertex = true;
-         cfg.fb_width = r->desc.width;
-         cfg.fb_height = r->desc.height;
-         cfg.layer_count = MIN2(layers - i * MALI_LAYERS_PER_TILER_CTX,
-                                MALI_LAYERS_PER_TILER_CTX);
-         cfg.layer_offset = -(int32_t)(i * MALI_LAYERS_PER_TILER_CTX);
-      }
-   }
+   for (uint32_t i = 0; i < td_count; i++)
+      pack_tiler_context(cmd, r, i, layers, once,
+                        (uint8_t *)p.cpu + i * pan_size(TILER_CONTEXT));
    r->tiler = p.gpu;
    r->tiler_cpu = p.cpu;
    r->td_count = td_count;
@@ -185,6 +200,17 @@ MALI_PER_ARCH(cmd_render_tiler)(struct mali_cmd_buffer *cmd)
 
    cmd->gfx.draw.dirty |= MALI_GFX_DIRTY_PASS;
    return true;
+}
+
+void
+MALI_PER_ARCH(cmd_render_tiler_set_provoking_vertex)(struct mali_cmd_buffer *cmd)
+{
+   struct mali_render_state *r = &cmd->gfx.render;
+   const uint32_t layers = MAX2(r->desc.layer_count, 1);
+   const bool once = cmd->usage & VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+   for (uint32_t i = 0; i < r->td_count; i++)
+      pack_tiler_context(cmd, r, i, layers, once,
+                        (uint8_t *)r->tiler_cpu + (uint64_t)i * pan_size(TILER_CONTEXT));
 }
 
 /* ---------------------------------------------------------------------- */

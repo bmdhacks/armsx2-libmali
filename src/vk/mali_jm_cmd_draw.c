@@ -30,9 +30,9 @@
  *    word clears it; genxml's default is 1). Rotation would move the
  *    provoking vertex of flat-shaded triangles, and ARMSX2 shades flat a
  *    lot. The blob never sets it; Mesa sets it only without flat inputs.
- *    The provoking vertex is the first one (the Tiler Context's First
- *    provoking vertex, mali_jm_cmd_render.c), Vulkan's default and the
- *    only mode we offer;
+ *    Whichever vertex is provoking (the Tiler Context's First provoking
+ *    vertex, mali_jm_cmd_render.c) stays the one the pass's pipelines
+ *    asked for, not one the hardware picked on its own;
  *  - the Draw descriptor's Vertex array is Packet = 1, pointer and
  *    strides 0 in every job: the hardware writes the vertex packet's
  *    address and strides there in Malloc Vertex mode (v9.xml), so a

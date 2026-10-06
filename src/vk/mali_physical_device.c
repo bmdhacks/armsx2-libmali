@@ -235,6 +235,11 @@ static const struct vk_device_extension_table mali_device_extensions = {
    /* VMA (ARMSX2's allocator) only asks for a memory budget when this is
     * listed. */
    .EXT_memory_budget = true,
+
+   /* Without it ARMSX2 de-indexes every flat-shaded draw on the CPU to
+    * fake a last-vertex convention (up to 3x the vertices) instead of
+    * just setting the pipeline's mode. Same hardware bit on both arches. */
+   .EXT_provoking_vertex = true,
 };
 
 static struct vk_device_extension_table
@@ -331,6 +336,11 @@ get_features(struct vk_features *f, uint32_t arch)
       .stippledRectangularLines = false,
       .stippledBresenhamLines = false,
       .stippledSmoothLines = false,
+
+      /* VK_EXT_provoking_vertex. No transform feedback, so the second
+       * bit is moot either way. */
+      .provokingVertexLast = true,
+      .transformFeedbackPreservesProvokingVertex = false,
 
       /* VK_EXT_device_fault */
       .deviceFaultEXT = true,
@@ -569,6 +579,11 @@ get_properties(const struct mali_physical_device *pdev, const char *name,
       /* VK_KHR_driver_properties */
       .driverID = VK_DRIVER_ID_ARM_PROPRIETARY,
       .conformanceVersion = { 0, 0, 0, 0 },
+
+      /* VK_EXT_provoking_vertex: the hardware bit is per render pass, not
+       * per pipeline (panvk reports the same). */
+      .provokingVertexModePerPipeline = false,
+      .transformFeedbackPreservesTriangleFanProvokingVertex = false,
    };
 
    snprintf(props->deviceName, sizeof(props->deviceName), "%s", name);
