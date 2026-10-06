@@ -69,6 +69,12 @@ struct mali_physical_device {
 
    VkPhysicalDeviceMemoryProperties memory;
    uint64_t timestamp_hz;              /* 0: no timestamps */
+
+   /* VK_EXT_memory_budget's heapUsage: bytes in live VkDeviceMemory
+    * allocations on this physical device, summed across every VkDevice.
+    * Atomic: mali_AllocateMemory/mali_FreeMemory touch it without the
+    * device lock. */
+   uint64_t heap_used;
 };
 
 VK_DEFINE_HANDLE_CASTS(mali_physical_device, vk.base, VkPhysicalDevice,
