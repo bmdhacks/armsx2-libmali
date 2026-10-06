@@ -259,17 +259,19 @@ device_extensions_for_arch(uint32_t arch)
  * fixed-function blender: a render target whose equation uses a SRC1
  * factor runs a blend shader, and only pipelines with such an equation
  * keep the fragment shader's second colour output (mali_shader.c).
+ *
+ * Not reported on either arch. With the feature, ARMSX2 moves some draws
+ * into 16-bit PS2 frames from its shader blend to a hardware blend that
+ * cannot apply the PS2's colour truncation, so those draws come out a few
+ * levels too bright (Gran Turismo 4's HUD: 6% of pixels, the same on other
+ * drivers that report it). The blend itself is correct here.
  */
 static bool
 dual_src_blend_for_arch(uint32_t arch)
 {
    switch (arch) {
    case 9:
-      return true;
    case 11:
-      /* Off for now: a rendering error in the dual-source path on this
-       * arch still needs tracking down. */
-      return false;
    default:
       return false;
    }
