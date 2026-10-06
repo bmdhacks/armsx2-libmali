@@ -942,16 +942,25 @@ mali_gfx_update_dirty(struct mali_cmd_buffer *cmd, const struct mali_draw_info *
    mali_gfx_collect_dynamic_dirty(cmd);
 
    /* The pass's provoking-vertex mode (provokingVertexModePerPipeline is
-    * false): take it from the first pipeline bound in the pass, before
-    * the tiler context or framebuffer descriptors are built. Read the
-    * pipeline's own copy, not cmd->vk.dynamic_graphics_state -- a
+    * false): take it from the first app pipeline bound in the pass,
+    * before the tiler context or framebuffer descriptors are built. Read
+    * the pipeline's own copy, not cmd->vk.dynamic_graphics_state -- a
     * pipeline with no dynamic state (every ARMSX2 pipeline) never copies
-    * this into it, since nothing else here reads it from there. */
+    * this into it, since nothing else here reads it from there.
+    *
+    * Only an app draw reaches this (a full-screen draw -- a clear, the
+    * in-pass primitive barrier -- calls cmd_render_tiler directly, never
+    * this function; cmd_run_fullscreen's own comment says why it does
+    * not need a mode). One of those may have already built the tiler
+    * context, with the default, before any app pipeline said otherwise;
+    * fix it up now that this is the first time we know. */
    const bool pv_first =
       p->state.rs.provoking_vertex == VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT;
    if (!r->first_provoking_vertex_set) {
       r->first_provoking_vertex = pv_first;
       r->first_provoking_vertex_set = true;
+      if (r->tiler)
+         MALI_PER_ARCH(cmd_render_tiler_set_provoking_vertex)(cmd);
    } else {
       assert(r->first_provoking_vertex == pv_first);
    }

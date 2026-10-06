@@ -128,6 +128,37 @@ hierarchy_mask(struct mali_device *dev)
    return levels < 4 ? fewer[levels] : MALI_TILER_HIERARCHY_MASK;
 }
 
+/*
+ * One layer's Tiler Context, packed on the CPU and copied into command
+ * memory (write-combined, never read back), noted so a command buffer
+ * that runs again gets it restored. Takes only data that stays the same
+ * for the pass's lifetime (r->desc, the pass's hierarchy mask and heap
+ * descriptor), so it can be called again later to fix up a field without
+ * redoing allocation or drifting from the initial build: a second
+ * note_reset for the same destination is applied after the first on the
+ * next resubmit (mali_jm_cmd_note_reset appends, mali_jm_cmd_prepare_submit
+ * runs the list in order), so its template wins.
+ */
+static void
+pack_tiler_context(struct mali_cmd_buffer *cmd, const struct mali_render_state *r,
+                   uint32_t mask, uint64_t heap, void *dst)
+{
+   struct mali_tiler_context_packed tc;
+   pan_pack(&tc, TILER_CONTEXT, cfg) {
+      cfg.polygon_list = 0;
+      cfg.hierarchy_mask = mask;
+      cfg.sample_pattern = MALI_SAMPLE_PATTERN_SINGLE_SAMPLED;
+      cfg.first_provoking_vertex = r->first_provoking_vertex;
+      cfg.fb_width = r->desc.width;
+      cfg.fb_height = r->desc.height;
+      cfg.layer_count = 1;
+      cfg.layer_offset = 0;
+      cfg.heap = heap;
+   }
+   memcpy(dst, &tc, sizeof(tc));
+   mali_jm_cmd_note_reset(cmd, dst, &tc, sizeof(tc));
+}
+
 bool
 MALI_PER_ARCH(cmd_render_tiler)(struct mali_cmd_buffer *cmd)
 {
@@ -150,27 +181,10 @@ MALI_PER_ARCH(cmd_render_tiler)(struct mali_cmd_buffer *cmd)
    if (!p.cpu)
       return false;
 
-   /* Every word, packed on the CPU and copied (command memory is
-    * write-combined). The tiler writes the polygon list and the state
-    * words; a command buffer that runs again gets the template back. */
-   struct mali_tiler_context_packed tc;
    const uint32_t mask = hierarchy_mask(cmd->dev);
-   for (uint32_t i = 0; i < layers; i++) {
-      pan_pack(&tc, TILER_CONTEXT, cfg) {
-         cfg.polygon_list = 0;
-         cfg.hierarchy_mask = mask;
-         cfg.sample_pattern = MALI_SAMPLE_PATTERN_SINGLE_SAMPLED;
-         cfg.first_provoking_vertex = r->first_provoking_vertex;
-         cfg.fb_width = r->desc.width;
-         cfg.fb_height = r->desc.height;
-         cfg.layer_count = 1;
-         cfg.layer_offset = 0;
-         cfg.heap = b->heap_desc;
-      }
-      void *dst = (uint8_t *)p.cpu + (uint64_t)i * pan_size(TILER_CONTEXT);
-      memcpy(dst, &tc, sizeof(tc));
-      mali_jm_cmd_note_reset(cmd, dst, &tc, sizeof(tc));
-   }
+   for (uint32_t i = 0; i < layers; i++)
+      pack_tiler_context(cmd, r, mask, b->heap_desc,
+                        (uint8_t *)p.cpu + (uint64_t)i * pan_size(TILER_CONTEXT));
    r->tiler = p.gpu;
    r->tiler_cpu = p.cpu;
    r->td_count = layers;
@@ -186,6 +200,19 @@ MALI_PER_ARCH(cmd_render_tiler)(struct mali_cmd_buffer *cmd)
 
    cmd->gfx.draw.dirty |= MALI_GFX_DIRTY_PASS;
    return true;
+}
+
+void
+MALI_PER_ARCH(cmd_render_tiler_set_provoking_vertex)(struct mali_cmd_buffer *cmd)
+{
+   struct mali_render_state *r = &cmd->gfx.render;
+   const uint32_t mask = hierarchy_mask(cmd->dev);
+   /* Pass-split carries heap_slot/heap_desc over unchanged (mali_jm_cmd_pass_split
+    * below), so the current batch's heap descriptor is still the pass's one. */
+   const uint64_t heap = cmd->jm.cur.heap_desc;
+   for (uint32_t i = 0; i < r->td_count; i++)
+      pack_tiler_context(cmd, r, mask, heap,
+                        (uint8_t *)r->tiler_cpu + (uint64_t)i * pan_size(TILER_CONTEXT));
 }
 
 /* The pass job limit (MALI_JM_PASS_MAX_JOBS, mali_jm.h): end the open
