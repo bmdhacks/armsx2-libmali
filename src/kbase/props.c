@@ -26,6 +26,9 @@ struct prop_field {
          sizeof(((struct mali_kbase_gpu_props *)0)->member)                \
    }
 #define G(n) [KB_GPUPROP_COHERENCY_GROUP_0 + (n)] = F(coherent_group_core_mask[n])
+/* JS_FEATURES_0..2 (keys 35..37), job manager only: see js_features in
+ * kbase.h. */
+#define JSF(n) [KB_GPUPROP_RAW_JS_FEATURES_0 + (n)] = F(js_features[n])
 
 static const struct prop_field prop_fields[KB_GPUPROP_KEY_COUNT] = {
    [KB_GPUPROP_PRODUCT_ID] = F(product_id),
@@ -63,11 +66,14 @@ static const struct prop_field prop_fields[KB_GPUPROP_KEY_COUNT] = {
    [KB_GPUPROP_RAW_MMU_FEATURES] = F(mmu_features),
    [KB_GPUPROP_RAW_AS_PRESENT] = F(as_present),
    [KB_GPUPROP_RAW_JS_PRESENT] = F(js_present),
+   JSF(0), JSF(1), JSF(2),
    [KB_GPUPROP_RAW_TILER_FEATURES] = F(tiler_features),
    [KB_GPUPROP_RAW_TEXTURE_FEATURES_0] = F(raw_texture_features[0]),
    [KB_GPUPROP_RAW_TEXTURE_FEATURES_1] = F(raw_texture_features[1]),
    [KB_GPUPROP_RAW_TEXTURE_FEATURES_2] = F(raw_texture_features[2]),
    [KB_GPUPROP_RAW_TEXTURE_FEATURES_3] = F(raw_texture_features[3]),
+   /* u64 on CSF, u32 on a job-manager kernel; store() below zero-extends
+    * either size into the 64-bit field. */
    [KB_GPUPROP_RAW_GPU_ID] = F(gpu_id),
    [KB_GPUPROP_RAW_THREAD_MAX_THREADS] = F(thread_max_threads),
    [KB_GPUPROP_RAW_THREAD_MAX_WORKGROUP_SIZE] = F(thread_max_workgroup_size),
@@ -85,6 +91,7 @@ static const struct prop_field prop_fields[KB_GPUPROP_KEY_COUNT] = {
 
 #undef F
 #undef G
+#undef JSF
 
 static uint64_t
 read_le(const uint8_t *p, unsigned bytes)

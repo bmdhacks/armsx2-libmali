@@ -124,6 +124,99 @@ finish_region(struct mali_kbase *kb, struct mali_kbase_bo *bo, bool cookie,
    return MALI_KBASE_SUCCESS;
 }
 
+/*
+ * kbase_check_alloc_flags / kbase_check_alloc_sizes, job-manager build
+ * (references/kbase-ums9620/mali/mali_kbase_mem.c; byte-identical to the
+ * r44p1 job-manager build, docs/g57/kbase-r40p0-vs-r44p1.md §5). Returns
+ * NULL when flags and the extension pass, else the reason (for the log
+ * line); every one of these is caught here rather than left to the
+ * kernel's blanket ENOMEM, so a flag mistake does not look like an
+ * out-of-memory failure.
+ */
+static const char *
+jm_check_alloc(uint64_t flags, uint64_t commit_pages, uint64_t extension)
+{
+   if (flags & KB_MEM_JM_RESERVED)
+      return "bit 8 or 19 is reserved on a job-manager context";
+   if ((flags & KB_MEM_PROT_GPU_EX) &&
+       (flags & (KB_MEM_PROT_GPU_WR | KB_MEM_GROW_ON_GPF | KB_MEM_TILER_ALIGN_TOP)))
+      return "GPU_EX with GPU_WR, GROW_ON_GPF or TILER_ALIGN_TOP";
+   if ((flags & KB_MEM_GROW_ON_GPF) && !extension)
+      return "GROW_ON_GPF with a zero extension";
+   if (flags & KB_MEM_TILER_ALIGN_TOP) {
+      if (!extension || (extension & (extension - 1)))
+         return "TILER_ALIGN_TOP extension is not a nonzero power of two";
+      if (extension > KB_MEM_TILER_ALIGN_TOP_EXT_MAX_PAGES)
+         return "TILER_ALIGN_TOP extension over 2 MiB";
+      if (commit_pages > extension)
+         return "TILER_ALIGN_TOP commit larger than the extension";
+   }
+   if (!(flags & (KB_MEM_GROW_ON_GPF | KB_MEM_TILER_ALIGN_TOP)) && extension)
+      return "a nonzero extension without GROW_ON_GPF or TILER_ALIGN_TOP";
+   return NULL;
+}
+
+/*
+ * MEM_ALLOC (nr 5, the plain 32-byte union): the only allocation ioctl a
+ * job-manager kernel has (no MEM_ALLOC_EX). flags has already had the
+ * generic normalization (NEED_MMAP stripped, GPU_EX implies GPU_RD, the
+ * GPU_EX+SAME_VA exclusivity check, the memory class's group bits) done by
+ * the caller.
+ */
+static enum mali_kbase_result
+jm_alloc(struct mali_kbase *kb, const struct mali_kbase_alloc_info *info, uint64_t va_pages,
+         uint64_t commit_pages, uint64_t flags, struct mali_kbase_bo *bo)
+{
+   if (info->fixed_address) {
+      KB_LOG(kb, "alloc: fixed_address is a CSF feature, not available on a "
+                 "job-manager context");
+      return MALI_KBASE_ERROR_INVALID_ARGUMENT;
+   }
+   /* A 64-bit job-manager context forces SAME_VA on everything except
+    * executable memory (KCTX_FORCE_SAME_VA,
+    * context/backend/mali_kbase_context_jm.c): the context's executable
+    * zone is already set up by mali_kbase_create (exec_init), before any
+    * allocation can reach here. */
+   if (!(flags & KB_MEM_PROT_GPU_EX))
+      flags |= KB_MEM_SAME_VA;
+
+   /* Unlike the CSF side (which only ever has GROW_ON_GPF to worry about
+    * and silently drops a stray extension), a nonzero extension without
+    * GROW_ON_GPF or TILER_ALIGN_TOP is a rule we validate rather than
+    * paper over: pass extension_pages through as given. */
+   uint64_t extension = info->extension_pages;
+   const char *why = jm_check_alloc(flags, commit_pages, extension);
+   if (why) {
+      KB_LOG(kb, "alloc: %s (flags 0x%llx)", why, (unsigned long long)flags);
+      return MALI_KBASE_ERROR_INVALID_ARGUMENT;
+   }
+
+   union kb_ioctl_mem_alloc a;
+   memset(&a, 0, sizeof(a));
+   a.in.va_pages = va_pages;
+   a.in.commit_pages = commit_pages;
+   a.in.extension = extension;
+   a.in.flags = flags;
+   long ret = kb_ioctl(kb, KB_IOCTL_MEM_ALLOC, &a);
+   if (ret < 0) {
+      KB_LOG(kb, "MEM_ALLOC of %llu pages, flags 0x%llx failed: %s",
+             (unsigned long long)va_pages, (unsigned long long)flags, strerror((int)-ret));
+      return kb_result_from_errno((int)-ret, KB_ERRNO_DEVICE_MEMORY);
+   }
+
+   bo->gpu_va = a.out.gpu_va;
+   bo->va_pages = va_pages;
+   bo->size = va_pages << KB_PAGE_SHIFT;
+   bo->flags = a.out.flags;
+   bo->attrs = attrs_from_flags(a.out.flags);
+
+   enum mali_kbase_result r =
+      finish_region(kb, bo, (a.out.flags & KB_MEM_SAME_VA) != 0, info->cpu_map);
+   if (r != MALI_KBASE_SUCCESS)
+      memset(bo, 0, sizeof(*bo));
+   return r;
+}
+
 enum mali_kbase_result
 mali_kbase_alloc(struct mali_kbase *kb, const struct mali_kbase_alloc_info *info,
                  struct mali_kbase_bo *bo)
@@ -159,6 +252,9 @@ mali_kbase_alloc(struct mali_kbase *kb, const struct mali_kbase_alloc_info *info
       flags &= ~KB_MEM_GROUP_ID_MASK;
       flags |= KB_MEM_GROUP_ID(mali_kbase_mem_class_group(info->mem_class));
    }
+
+   if (kb->frontend == MALI_KBASE_FRONTEND_JM)
+      return jm_alloc(kb, info, va_pages, commit_pages, flags, bo);
 
    union kb_ioctl_mem_alloc_ex a;
    memset(&a, 0, sizeof(a));

@@ -48,11 +48,15 @@ idep_mali_compiler = declare_dependency(
   link_args : _kraid_wrap,
 )
 
-# The kbase kernel interface: context, GPU properties, memory.
+# The kbase kernel interface: context, GPU properties, memory. jm.c is the
+# job-manager (Mali-G57) frontend's atom submission and events, alongside
+# csf.c's CSF frontend; both are compiled in unconditionally (the frontend
+# is a runtime choice, mali_kbase_create) but only one is ever called on a
+# given context.
 libmali_kbase = static_library(
   'mali_kbase',
   files('kbase/cache.c', 'kbase/context.c', 'kbase/csf.c', 'kbase/device.c',
-        'kbase/kcpu.c', 'kbase/mem.c', 'kbase/props.c'),
+        'kbase/jm.c', 'kbase/kcpu.c', 'kbase/mem.c', 'kbase/props.c'),
   c_args : [pre_args, libmali_c_args],
   gnu_symbol_visibility : 'hidden',
 )

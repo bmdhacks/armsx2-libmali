@@ -15,6 +15,15 @@
  * command-stream queues and their rings, the tiler heap, and the event
  * channel (csf.c), and one kcpu queue for sync files (kcpu.c).
  *
+ * mali_kbase_create also speaks the older job-manager (JM) frontend the
+ * Mali-G57 uses instead of CSF (docs/design/g57-backend.md §3-§4): the
+ * handshake tries CSF first, so the G615 is unaffected, and falls back to
+ * the JM version check on EPERM. On a JM context, memory allocation takes
+ * the JM rules (mem.c), and submission goes through job-manager atoms
+ * instead of command-stream rings (jm.c: atom numbers, JOB_SUBMIT, event
+ * read, POST_TERM, sync-file streams) — there is no JM equivalent of
+ * queue groups, command-stream queues or the tiler heap in this file.
+ *
  * All kernel access goes through a backend (struct mali_kbase_backend), so
  * the host tests can run this code against a fake kernel.
  *
@@ -33,6 +42,7 @@
 #include <poll.h>
 
 #include "uapi.h"
+#include "uapi_jm.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -142,6 +152,10 @@ struct mali_kbase_gpu_props {
    uint32_t mmu_features;
    uint32_t as_present;
    uint32_t js_present;
+   /* job manager only: JS_FEATURES_0..2 (keys 35..37), one per job slot.
+    * A G57 MC4 has three slots (fragment, vtc, compute-only); ARMSX2 never
+    * needs a fourth. */
+   uint32_t js_features[3];
    uint32_t tiler_features;
    uint32_t raw_texture_features[4];
    uint64_t gpu_id;
@@ -207,6 +221,17 @@ struct mali_kbase_glb_iface {
 /* ---------------------------------------------------------------------- */
 /* Context                                                                 */
 
+/*
+ * Which kbase frontend the context negotiated. mali_kbase_create works out
+ * which one the kernel is: CSF-only fields (glb, user_reg_page) stay zero
+ * on a job-manager context, and the job-manager tracking-page mapping stays
+ * NULL on a CSF context.
+ */
+enum mali_kbase_frontend {
+   MALI_KBASE_FRONTEND_CSF = 0,
+   MALI_KBASE_FRONTEND_JM = 1,
+};
+
 typedef void (*mali_kbase_log_fn)(void *user, const char *msg);
 
 struct mali_kbase_create_info {
@@ -229,22 +254,41 @@ struct mali_kbase_stats {
 struct mali_kbase {
    const struct mali_kbase_backend *backend;
    int fd;
-   uint16_t uk_major, uk_minor;  /* negotiated; always 1.20 today */
+   enum mali_kbase_frontend frontend;
+   uint16_t uk_major, uk_minor;  /* negotiated: 1.20 on CSF, 11.36 on JM */
    struct mali_kbase_gpu_props props;
-   struct mali_kbase_glb_iface glb;
-   /* The GPU's user register page, mapped read-only. */
+   struct mali_kbase_glb_iface glb;          /* CSF only; zero on JM */
+   /* The GPU's user register page, mapped read-only. CSF only; NULL on JM. */
    const volatile uint32_t *user_reg_page;
+   /* The job-manager tracking-page mapping (BASE_MEM_MAP_TRACKING_HANDLE),
+    * kept only so mali_kbase_destroy can munmap it. CSF only; NULL on JM. */
+   void *jm_tracking_page;
    mali_kbase_log_fn log;
    void *log_user;
    struct mali_kbase_stats stats;
 };
 
 /*
- * Open the device and set up a context, in the blob's order: open,
- * VERSION_CHECK (propose 1.20, refuse any other answer), SET_FLAGS,
- * GET_GPUPROPS, CS_GET_GLB_IFACE, map the user register page,
- * MEM_EXEC_INIT. On failure everything done so far is undone and a line
- * saying why is logged.
+ * Open the device and set up a context. mali_kbase_create works out which
+ * frontend the kernel speaks (g57-backend.md §3):
+ *
+ *   1. VERSION_CHECK (ioctl 52) proposing 1.20. On a matching answer the
+ *      frontend is CSF and the rest of the sequence is the blob's CSF
+ *      order: SET_FLAGS, GET_GPUPROPS, CS_GET_GLB_IFACE, map the user
+ *      register page, MEM_EXEC_INIT, MEM_JIT_INIT (trim level 5).
+ *   2. Otherwise, VERSION_CHECK (ioctl 0) proposing 11.36 on the same fd:
+ *      each frontend's kernel answers the other's version-check ioctl
+ *      with EPERM without touching setup state, so trying both on one fd
+ *      is valid. On a matching answer the frontend is job-manager and the
+ *      rest follows the T820 blob's order: SET_FLAGS, map the tracking
+ *      page (BASE_MEM_MAP_TRACKING_HANDLE, required before any
+ *      allocation on this kernel), GET_GPUPROPS, MEM_EXEC_INIT,
+ *      MEM_JIT_INIT (trim level 0; we do not use JIT memory, see
+ *      mali_kbase_alloc).
+ *   3. If neither answer matches, INCOMPATIBLE_KERNEL, logging both
+ *      refusals.
+ *
+ * Any other failure undoes everything done so far and logs why.
  */
 enum mali_kbase_result
 mali_kbase_create(const struct mali_kbase_create_info *info,
@@ -441,6 +485,88 @@ enum mali_kbase_result mali_kbase_mem_commit(struct mali_kbase *kb,
 enum mali_kbase_result mali_kbase_mem_flags_change(struct mali_kbase *kb,
                                                    uint64_t gpu_va, uint64_t flags,
                                                    uint64_t mask);
+
+/* ---------------------------------------------------------------------- */
+/* Job manager: atom numbers, submission, events, sync-file streams (jm.c) */
+
+/*
+ * 255 atom numbers (1..255; 0 means "no dependency" and is never handed
+ * out), kept in a bitmap. A number may be reused only once its completion
+ * event has been read (g57-backend.md §9.2): a dependency on a number
+ * whose event has not been read, but that was freed anyway, would resolve
+ * against whatever atom the kernel gives that number next. This type has
+ * no lock of its own; whatever lock serializes a queue's submits and event
+ * reads also covers its atom-number allocator.
+ */
+struct mali_kbase_jm_atom_ids {
+   uint8_t bitmap[32]; /* bit n set: atom number n is in use */
+};
+
+void mali_kbase_jm_atom_ids_init(struct mali_kbase_jm_atom_ids *ids);
+
+/*
+ * Take up to n free numbers into out[0..], lowest first. Returns the
+ * number actually taken, which is less than n once fewer than n are free
+ * (0 if none are). Every number returned is nonzero and marked in use.
+ */
+unsigned mali_kbase_jm_atom_ids_alloc(struct mali_kbase_jm_atom_ids *ids, uint8_t *out,
+                                      unsigned n);
+/* Marks id free again. id must be nonzero and in use. */
+void mali_kbase_jm_atom_ids_free(struct mali_kbase_jm_atom_ids *ids, uint8_t id);
+bool mali_kbase_jm_atom_ids_used(const struct mali_kbase_jm_atom_ids *ids, uint8_t id);
+unsigned mali_kbase_jm_atom_ids_free_count(const struct mali_kbase_jm_atom_ids *ids);
+
+/*
+ * JOB_SUBMIT: submits exactly the atoms the caller built (dependencies,
+ * core_req, atom numbers already filled in; this layer does not interpret
+ * them). More than 256 atoms, the kernel's limit per ioctl call
+ * (jm-driver-needs.md §2.2), are split across as many JOB_SUBMIT calls as
+ * needed; nothing else is done between them (no per-edge round trip, see
+ * g57-backend.md §9.1/§4.5 — the whole dependency graph is submitted with
+ * pre_dep already resolved by the caller). n may be 0 (no-op).
+ */
+enum mali_kbase_result
+mali_kbase_jm_submit(struct mali_kbase *kb, const struct kb_jm_atom *atoms, unsigned n);
+
+/*
+ * Non-blocking read() of pending completion events (24-byte
+ * base_jd_event_v2 records). *n is set to the number actually read (0 if
+ * none are pending yet: EAGAIN). After mali_kbase_jm_post_term the kernel
+ * answers EPIPE once every queued event has been drained; that is
+ * reported as *n == 0 with *terminated set true (terminated may be NULL
+ * if the caller never calls post_term on this context, or does not need
+ * to know).
+ */
+enum mali_kbase_result
+mali_kbase_jm_read_events(struct mali_kbase *kb, struct kb_jm_event *ev, unsigned max,
+                          unsigned *n, bool *terminated);
+
+/*
+ * poll(2) on the kbase fd alone (POLLIN). Returns 1 when the fd is
+ * readable, 0 on timeout, -1 on failure (errno set). Unlike the CSF side's
+ * mali_kbase_event_wait, there is no wake_fd and no event thread at this
+ * layer: job-manager completion has one reader at a time by the caller's
+ * own choice and lock (g57-backend.md §9.3), not ours.
+ */
+int mali_kbase_jm_poll(struct mali_kbase *kb, int timeout_ms);
+
+/*
+ * POST_TERM: tells the kernel this context will submit no more atoms.
+ * mali_kbase_destroy calls this itself (best effort) before closing the
+ * fd. A caller that keeps reading events past that point sees
+ * mali_kbase_jm_read_events report *terminated once they drain
+ * (g57-backend.md §9.3, "Teardown").
+ */
+enum mali_kbase_result mali_kbase_jm_post_term(struct mali_kbase *kb);
+
+/*
+ * STREAM_CREATE: a new sync-file timeline fd, the stream_fd a
+ * FENCE_TRIGGER soft atom's base_fence names (g57-backend.md §9.4). name
+ * is copied in, truncated to 31 bytes plus a NUL as the kernel requires;
+ * NULL gives it an empty name.
+ */
+enum mali_kbase_result
+mali_kbase_stream_create(struct mali_kbase *kb, const char *name, int *out_fd);
 
 /* ---------------------------------------------------------------------- */
 /* CSF: queue groups, command-stream queues, tiler heap, events (csf.c)    */

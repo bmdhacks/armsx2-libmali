@@ -22,6 +22,7 @@
  *                                      2, which the Vulkan context has)
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -55,14 +56,26 @@ open_device(struct mali_kbase *kb, const char *path)
 }
 
 /*
- * We propose UK 1.20, the r44p1 interface, and accept only 1.20 back. The
- * kernel answers min(its minor, ours) when the major matches and its own
- * version otherwise, so "1.20" means "a kernel at 1.20 or newer" (the
- * RG 477V is 1.21). The blob accepts older minors and switches ioctl
+ * We propose UK 1.20, the r44p1 CSF interface, and accept only 1.20 back.
+ * The kernel answers min(its minor, ours) when the major matches and its
+ * own version otherwise, so "1.20" means "a CSF kernel at 1.20 or newer"
+ * (the RG 477V is 1.21). The blob accepts older minors and switches ioctl
  * variants for them; we implement only the 1.20 variants (MEM_ALLOC_EX,
  * the 112-byte group create, tiler heap init with buf_desc_va, no
  * tracking page), so an older kernel is refused here, loudly, instead of
  * failing later in some ioctl.
+ *
+ * If that check does not come back as exactly 1.20 (including EPERM: a
+ * job-manager kernel reserves this ioctl number and answers it with
+ * kbase_api_handshake_dummy, g57-backend.md §3), we try the job-manager
+ * handshake instead, on the same fd: VERSION_CHECK ioctl 0 proposing
+ * 11.36. Each frontend's kernel answers the other's version-check number
+ * with EPERM without touching the file's setup state, so this second
+ * check is valid. We accept only exactly 11.36 back, the same "kernel at
+ * this minor or newer" pin as the CSF side (the kernel answers
+ * min(ours, its own) for a matching major). Only one of kb->uk_major/minor
+ * and kb->frontend is meaningful once this returns success; the other
+ * frontend's fields in struct mali_kbase stay zero.
  */
 static enum mali_kbase_result
 version_handshake(struct mali_kbase *kb)
@@ -72,21 +85,47 @@ version_handshake(struct mali_kbase *kb)
       .minor = KB_UK_VERSION_MINOR,
    };
    long ret = kb_ioctl(kb, KB_IOCTL_VERSION_CHECK, &vc);
-   if (ret < 0) {
-      KB_LOG(kb, "refusing device: VERSION_CHECK (CSF ioctl 52) failed: %s; "
-                 "not a CSF kbase kernel?",
-             strerror((int)-ret));
-      return MALI_KBASE_ERROR_INCOMPATIBLE_KERNEL;
+   if (ret >= 0 && vc.major == KB_UK_VERSION_MAJOR && vc.minor == KB_UK_VERSION_MINOR) {
+      kb->frontend = MALI_KBASE_FRONTEND_CSF;
+      kb->uk_major = vc.major;
+      kb->uk_minor = vc.minor;
+      return MALI_KBASE_SUCCESS;
    }
-   if (vc.major != KB_UK_VERSION_MAJOR || vc.minor != KB_UK_VERSION_MINOR) {
-      KB_LOG(kb, "refusing device: kernel answered UK %u.%u, this driver "
-                 "speaks only UK %u.%u (kbase r44p1)",
-             vc.major, vc.minor, KB_UK_VERSION_MAJOR, KB_UK_VERSION_MINOR);
-      return MALI_KBASE_ERROR_INCOMPATIBLE_KERNEL;
+
+   char csf_detail[80];
+   if (ret < 0)
+      snprintf(csf_detail, sizeof(csf_detail), "CSF VERSION_CHECK (ioctl 52) failed: %s",
+               strerror((int)-ret));
+   else
+      snprintf(csf_detail, sizeof(csf_detail),
+               "CSF VERSION_CHECK (ioctl 52) answered UK %u.%u", vc.major, vc.minor);
+
+   struct kb_ioctl_version_check jvc = {
+      .major = KB_JM_UK_VERSION_MAJOR,
+      .minor = KB_JM_UK_VERSION_MINOR,
+   };
+   long jret = kb_ioctl(kb, KB_JM_IOCTL_VERSION_CHECK, &jvc);
+   if (jret >= 0 && jvc.major == KB_JM_UK_VERSION_MAJOR &&
+       jvc.minor == KB_JM_UK_VERSION_MINOR) {
+      kb->frontend = MALI_KBASE_FRONTEND_JM;
+      kb->uk_major = jvc.major;
+      kb->uk_minor = jvc.minor;
+      return MALI_KBASE_SUCCESS;
    }
-   kb->uk_major = vc.major;
-   kb->uk_minor = vc.minor;
-   return MALI_KBASE_SUCCESS;
+
+   if (jret < 0)
+      KB_LOG(kb, "refusing device: %s (this driver speaks CSF UK %u.%u); "
+                 "job-manager VERSION_CHECK (ioctl 0) failed too: %s (this driver "
+                 "speaks job-manager UK %u.%u)",
+             csf_detail, KB_UK_VERSION_MAJOR, KB_UK_VERSION_MINOR, strerror((int)-jret),
+             KB_JM_UK_VERSION_MAJOR, KB_JM_UK_VERSION_MINOR);
+   else
+      KB_LOG(kb, "refusing device: %s (this driver speaks CSF UK %u.%u); "
+                 "job-manager VERSION_CHECK (ioctl 0) answered UK %u.%u (this driver "
+                 "speaks job-manager UK %u.%u)",
+             csf_detail, KB_UK_VERSION_MAJOR, KB_UK_VERSION_MINOR, jvc.major, jvc.minor,
+             KB_JM_UK_VERSION_MAJOR, KB_JM_UK_VERSION_MINOR);
+   return MALI_KBASE_ERROR_INCOMPATIBLE_KERNEL;
 }
 
 static enum mali_kbase_result
@@ -201,6 +240,26 @@ map_user_reg_page(struct mali_kbase *kb)
    return MALI_KBASE_SUCCESS;
 }
 
+/*
+ * BASE_MEM_MAP_TRACKING_HANDLE: on this job-manager kernel (UK 11.36, older
+ * than 11.38) an allocation before this mapping exists fails with EINVAL
+ * (kbase_mem_allow_alloc; docs/g57/kbase-r40p0-vs-r44p1.md §2 correction),
+ * and munmapping it again blocks allocation once more. We never touch the
+ * mapping's contents (PROT_NONE); mali_kbase_destroy unmaps it.
+ */
+static enum mali_kbase_result
+jm_map_tracking_page(struct mali_kbase *kb)
+{
+   void *p = kb->backend->mmap(kb->backend->priv, KB_PAGE_SIZE, PROT_NONE, kb->fd,
+                               KB_MEM_MAP_TRACKING_HANDLE);
+   if (p == MAP_FAILED) {
+      KB_LOG(kb, "mapping the job-manager tracking page failed: %s", strerror(errno));
+      return MALI_KBASE_ERROR_MAP_FAILED;
+   }
+   kb->jm_tracking_page = p;
+   return MALI_KBASE_SUCCESS;
+}
+
 static enum mali_kbase_result
 exec_init(struct mali_kbase *kb)
 {
@@ -225,11 +284,19 @@ jit_init(struct mali_kbase *kb)
     * contexts and chunks there: without it CS_TILER_HEAP_INIT fails with
     * ENOMEM (found on the RG 477V). It must come before the first
     * allocation. Group 0: the blob takes it from config option 0x3b,
-    * whose default is not decoded. */
+    * whose default is not decoded.
+    *
+    * On a job-manager context we issue it for the same reason the CSF
+    * side does (it costs only a VA reservation, and keeps the context set
+    * up like the one the kernel was tested with); our driver has a
+    * driver-owned tiler-heap ring instead of JIT (g57-backend.md §8.1), so
+    * JIT memory itself is unused there too. The T820 blob's trim level is
+    * 0, not the CSF side's 5. */
    struct kb_ioctl_mem_jit_init ji = {
       .va_pages = KB_JIT_VA_PAGES,
       .max_allocations = KB_JIT_MAX_ALLOCATIONS,
-      .trim_level = KB_JIT_TRIM_LEVEL,
+      .trim_level = kb->frontend == MALI_KBASE_FRONTEND_JM ? KB_JM_JIT_TRIM_LEVEL
+                                                            : KB_JIT_TRIM_LEVEL,
       .group_id = 0,
       .phys_pages = KB_JIT_VA_PAGES,
    };
@@ -244,6 +311,17 @@ jit_init(struct mali_kbase *kb)
 static void
 release(struct mali_kbase *kb)
 {
+   if (kb->frontend == MALI_KBASE_FRONTEND_JM && kb->fd >= 0) {
+      /* Best effort: a context that failed setup before SET_FLAGS has
+       * nothing to terminate, and a failure here does not change that we
+       * are about to close the fd anyway. */
+      enum mali_kbase_result r = mali_kbase_jm_post_term(kb);
+      if (r != MALI_KBASE_SUCCESS)
+         KB_LOG(kb, "POST_TERM during teardown failed (ignored): %s",
+                mali_kbase_result_str(r));
+   }
+   if (kb->jm_tracking_page)
+      kb->backend->munmap(kb->backend->priv, kb->jm_tracking_page, KB_PAGE_SIZE);
    if (kb->user_reg_page)
       kb->backend->munmap(kb->backend->priv, (void *)kb->user_reg_page, KB_PAGE_SIZE);
    free(kb->glb.groups);
@@ -286,11 +364,13 @@ mali_kbase_create(const struct mali_kbase_create_info *info, struct mali_kbase *
       r = version_handshake(kb);
    if (r == MALI_KBASE_SUCCESS)
       r = set_flags(kb, info->mmu_group);
+   if (r == MALI_KBASE_SUCCESS && kb->frontend == MALI_KBASE_FRONTEND_JM)
+      r = jm_map_tracking_page(kb);
    if (r == MALI_KBASE_SUCCESS)
       r = load_gpu_props(kb);
-   if (r == MALI_KBASE_SUCCESS)
+   if (r == MALI_KBASE_SUCCESS && kb->frontend == MALI_KBASE_FRONTEND_CSF)
       r = load_glb_iface(kb);
-   if (r == MALI_KBASE_SUCCESS)
+   if (r == MALI_KBASE_SUCCESS && kb->frontend == MALI_KBASE_FRONTEND_CSF)
       r = map_user_reg_page(kb);
    if (r == MALI_KBASE_SUCCESS)
       r = exec_init(kb);
