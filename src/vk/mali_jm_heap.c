@@ -68,8 +68,11 @@ slot_alloc(struct mali_jm_device *jd, struct mali_kbase_bo *bo)
       .size = MALI_JM_HEAP_SLOT_SIZE,
       .commit_size = MALI_JM_HEAP_CHUNK,
       .extension_pages = MALI_JM_HEAP_CHUNK / KB_PAGE_SIZE,
-      .flags = KB_MEM_PROT_GPU_RD | KB_MEM_PROT_GPU_WR | KB_MEM_GROW_ON_GPF |
-               KB_MEM_TILER_ALIGN_TOP,
+      /* COHERENT_LOCAL (inner shareable on the GPU), as the kernel gives
+       * its own JIT regions: the tiler reads the positions the shader
+       * cores write into this memory during the same job, which it does
+       * not see otherwise. */
+      .flags = MALI_KBASE_FLAGS_DEVICE_TRANSIENT | KB_MEM_GROW_ON_GPF | KB_MEM_TILER_ALIGN_TOP,
       .mem_class = MALI_KBASE_MEM_CLASS_DEVICE_TRANSIENT,
    };
    if (mali_kbase_alloc(jd->kb, &ai, bo) != MALI_KBASE_SUCCESS) {
