@@ -42,9 +42,27 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "util/log.h"
 #include "util/os_time.h"
 
+#include "vk_enum_to_str.h"
+
 #include "mali_vk.h"
+
+/* A failed sync-file import or export, in the log (see
+ * mali_diag_should_log); fd is -1 when there is none to name. */
+void
+MALI_PER_ARCH(sync_file_log_error)(struct mali_device *dev, const char *op, int fd,
+                                   const char *why)
+{
+   uint32_t n;
+   if (!mali_diag_should_log(&dev->diag.sync_file_errors, &n))
+      return;
+   if (fd >= 0)
+      mesa_logw("malisx2: %s sync file fd %d failed: %s (sync-file error %u)", op, fd, why, n);
+   else
+      mesa_logw("malisx2: %s a sync file failed: %s (sync-file error %u)", op, why, n);
+}
 
 static struct mali_sync *
 to_sync(struct vk_sync *s)
@@ -152,6 +170,63 @@ sync_is_signaled(struct mali_device *dev, struct mali_sync *s, bool pending)
    return pending || MALI_PER_ARCH(queue_reached)(dev, s->req);
 }
 
+/*
+ * The slow-wait log: what a host wait is still waiting for once it has
+ * blocked for MALI_SLOW_WAIT_NS (once per wait; mali_diag_should_log
+ * thins repeats). With dev->lock held.
+ */
+static void
+note_slow_wait(struct mali_device *dev, uint32_t count, const struct vk_sync_wait *waits,
+               bool any, uint64_t abs_timeout_ns, int64_t waited_ns, uint32_t *report)
+{
+   uint32_t n;
+   if (!mali_diag_should_log(&dev->diag.slow_waits, &n))
+      return;
+   *report = n;
+
+   char what[192];
+   size_t len = 0;
+   unsigned listed = 0, more = 0;
+   what[0] = 0;
+   for (uint32_t i = 0; i < count; i++) {
+      struct mali_sync *s = to_sync(waits[i].sync);
+      if (s->host_signaled)
+         continue;
+      if (listed == 4) {
+         more++;
+         continue;
+      }
+      int r;
+      if (s->fd >= 0)
+         r = snprintf(what + len, sizeof(what) - len, "%ssync file fd %d", listed ? ", " : "",
+                      s->fd);
+      else if (s->submitted)
+         r = snprintf(what + len, sizeof(what) - len, "%sGPU work up to submission %llu",
+                      listed ? ", " : "", (unsigned long long)s->req[0]);
+      else
+         r = snprintf(what + len, sizeof(what) - len, "%sa sync nothing has signalled yet",
+                      listed ? ", " : "");
+      if (r > 0)
+         len = MIN2(len + (size_t)r, sizeof(what) - 1);
+      listed++;
+   }
+   if (more)
+      snprintf(what + len, sizeof(what) - len, " and %u more", more);
+
+   char timeout[48];
+   if (abs_timeout_ns >= (uint64_t)INT64_MAX)
+      snprintf(timeout, sizeof(timeout), "no timeout");
+   else
+      snprintf(timeout, sizeof(timeout), "timeout in %lld ms",
+               (long long)(((int64_t)abs_timeout_ns - os_time_get_nano()) / 1000000));
+   char state[320];
+   MALI_PER_ARCH(queue_describe)(dev, state, sizeof(state));
+   mesa_logw("malisx2: a host wait (%s of %u, %s) has blocked for %lld ms (slow wait %u); "
+             "waiting for %s; queue: %s",
+             any ? "any" : "all", count, timeout, (long long)(waited_ns / 1000000), n,
+             listed ? what : "nothing pending", state);
+}
+
 /* Without kernel events a sleeping wait re-reads the done slots this
  * often; with them, this only bounds the damage of a missed event. */
 #define WAIT_SLICE_NO_EVENTS_NS (1ll * 1000 * 1000)
@@ -172,6 +247,9 @@ sync_wait_many(struct vk_device *vkdev, uint32_t count,
    const int64_t slice = has_notifier ? WAIT_SLICE_EVENTS_NS : WAIT_SLICE_NO_EVENTS_NS;
    VkResult result;
    bool slept = false;
+   const int64_t start = os_time_get_nano();
+   bool warned = false;
+   uint32_t report = 0;
 
    pthread_mutex_lock(&dev->lock);
    for (;;) {
@@ -215,6 +293,11 @@ sync_wait_many(struct vk_device *vkdev, uint32_t count,
          break;
       }
 
+      if (!warned && now - start >= MALI_SLOW_WAIT_NS) {
+         warned = true;
+         note_slow_wait(dev, count, waits, any, abs_timeout_ns, now - start, &report);
+      }
+
       int64_t until = MIN2((int64_t)MIN2(abs_timeout_ns, (uint64_t)INT64_MAX), now + slice);
       if (!slept) {
          dev->stats.waits++;
@@ -239,6 +322,12 @@ sync_wait_many(struct vk_device *vkdev, uint32_t count,
       dev->stats.wakeups++;
    }
    pthread_mutex_unlock(&dev->lock);
+   if (report) {
+      mesa_logw("malisx2: slow wait %u ended after %lld ms: %s", report,
+                (long long)((os_time_get_nano() - start) / 1000000),
+                result == VK_SUCCESS ? "signalled" :
+                result == VK_TIMEOUT ? "timed out" : "device lost");
+   }
    return result;
 }
 
@@ -256,12 +345,18 @@ sync_import_sync_file(struct vk_device *vkdev, struct vk_sync *vs, int fd)
    struct mali_sync *s = to_sync(vs);
 
    int dup_fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
-   if (dup_fd < 0)
-      return vk_errorf(vkdev, errno == EMFILE ? VK_ERROR_TOO_MANY_OBJECTS :
-                                                VK_ERROR_OUT_OF_HOST_MEMORY,
-                       "cannot duplicate sync file %d: %s", fd, strerror(errno));
-   if (mali_kbase_fence_validate(dev->kbase, dup_fd) != MALI_KBASE_SUCCESS) {
+   if (dup_fd < 0) {
+      const int err = errno;
+      MALI_PER_ARCH(sync_file_log_error)(dev, "import of", fd, strerror(err));
+      return vk_errorf(vkdev, err == EMFILE  ? VK_ERROR_TOO_MANY_OBJECTS :
+                              err == EBADF ? VK_ERROR_INVALID_EXTERNAL_HANDLE :
+                                             VK_ERROR_OUT_OF_HOST_MEMORY,
+                       "cannot duplicate sync file %d: %s", fd, strerror(err));
+   }
+   const enum mali_kbase_result vr = mali_kbase_fence_validate(dev->kbase, dup_fd);
+   if (vr != MALI_KBASE_SUCCESS) {
       close(dup_fd);
+      MALI_PER_ARCH(sync_file_log_error)(dev, "import of", fd, mali_kbase_result_str(vr));
       return vk_errorf(vkdev, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                        "fd %d is not a sync file", fd);
    }
@@ -311,6 +406,8 @@ sync_export_sync_file(struct vk_device *vkdev, struct vk_sync *vs, int *pfd)
                          "exporting a sync file from a sync nothing will signal");
    }
    pthread_mutex_unlock(&dev->lock);
+   if (result != VK_SUCCESS)
+      MALI_PER_ARCH(sync_file_log_error)(dev, "export to", -1, vk_Result_to_str(result));
    return result;
 }
 

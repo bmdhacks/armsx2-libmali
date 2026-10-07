@@ -44,6 +44,8 @@ stream_get(struct mali_device *dev, int *out)
       enum mali_kbase_result r = mali_kbase_stream_create(jd->kb, name, &jd->stream_fd);
       if (r != MALI_KBASE_SUCCESS) {
          jd->stream_fd = -1;
+         MALI_PER_ARCH(sync_file_log_error)(dev, "creating the timeline for", -1,
+                                            mali_kbase_result_str(r));
          return vk_errorf(dev, VK_ERROR_OUT_OF_HOST_MEMORY,
                           "cannot create the sync-file timeline: %s",
                           mali_kbase_result_str(r));
@@ -130,6 +132,8 @@ MALI_PER_ARCH(sync_file_create)(struct mali_device *dev, uint32_t fd_count, cons
    if (fd < 0) {
       /* The kernel refused the trigger at submit (its event will say so,
        * as device loss). */
+      MALI_PER_ARCH(sync_file_log_error)(dev, "FENCE_TRIGGER export to", -1,
+                                         "the kernel returned no fd");
       return vk_errorf(dev, VK_ERROR_OUT_OF_HOST_MEMORY,
                        "the kernel did not create a sync file for the fence trigger");
    }

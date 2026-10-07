@@ -767,9 +767,20 @@ extern const struct vk_sync_type MALI_PER_ARCH(sync_type);
 
 void MALI_PER_ARCH(sync_clear)(struct mali_sync *s);
 
+/* Log a failed sync-file import or export (mali_sync.c; thinned by
+ * mali_diag_should_log). op says which ("import of", "export to", ...);
+ * fd is -1 when there is none to name. Frontend-neutral. */
+void MALI_PER_ARCH(sync_file_log_error)(struct mali_device *dev, const char *op, int fd,
+                                        const char *why);
+
 /* Hooks mali_sync.c calls (see mali_queue.h for the CSF bodies). */
 const char *MALI_PER_ARCH(queue_wait)(struct mali_device *dev);
 bool MALI_PER_ARCH(queue_reached)(struct mali_device *dev, const uint64_t req[MALI_SYNC_REQ_COUNT]);
+
+/* For the slow-wait log (mali_sync.c, mali_jm_queue.c): what the queue
+ * is waiting for, as one line (submissions, completions, atoms in flight,
+ * events read). With dev->lock held. */
+void MALI_PER_ARCH(queue_describe)(struct mali_device *dev, char *buf, size_t size);
 
 /* Host waits re-check every 20 ms even without an event, as on the
  * G615: the reader's poll() covers GPU completion, the slice covers host
