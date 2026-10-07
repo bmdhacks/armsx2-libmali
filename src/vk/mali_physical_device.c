@@ -79,23 +79,66 @@ mali_kbase_log_to_vk(void *user, const char *msg)
 /* ---------------------------------------------------------------------- */
 /* Identity                                                                */
 
+/*
+ * Arch 9 (first-generation Valhall, job manager). The product major in
+ * product_id picks the part, and the names are the ones Arm's userspace
+ * drivers print:
+ *
+ *   0x9000  Mali-G77; the r32p1 driver (the only one we have for G77
+ *           silicon) calls it G57 instead when the GPU has fewer than 7
+ *           shader cores, and appends " MC<cores>" either way
+ *   0x9001  Mali-G57
+ *   0x9002  Mali-G78
+ *   0x9003  Mali-G57 (the second G57 product ID; each Arm driver build
+ *           names only one of 0x9001 and 0x9003)
+ *   0x9004  Mali-G68
+ *   0x9005  Mali-G78AE
+ *
+ * The G57 IDs get the bare "Mali-G57" that the Arm driver on the Unisoc
+ * T820 prints, and G78, G68 and G78AE are bare in every Arm driver we
+ * know of. An arch 9 product that is not listed is named as 0x9000 is:
+ * every arch 9 part is a first-generation Valhall, and ARMSX2 takes the
+ * family and the core count from the name.
+ */
+static void
+v9_device_name(const struct mali_kbase_gpu_props *p, char *buf, size_t size)
+{
+   switch (p->product_id & 0xf00f) {
+   case 0x9001:
+   case 0x9003:
+      snprintf(buf, size, "Mali-G57");
+      return;
+   case 0x9002:
+      snprintf(buf, size, "Mali-G78");
+      return;
+   case 0x9004:
+      snprintf(buf, size, "Mali-G68");
+      return;
+   case 0x9005:
+      snprintf(buf, size, "Mali-G78AE");
+      return;
+   case 0x9000:
+      break;
+   default:
+      mesa_logw("malisx2: unknown arch 9 product 0x%04x, naming it by core count",
+                p->product_id);
+      break;
+   }
+
+   /* No shader cores reported (a property stream without the register):
+    * there is no count to choose a family by. */
+   if (!p->core_count) {
+      snprintf(buf, size, "Mali-G77");
+      return;
+   }
+   snprintf(buf, size, "Mali-%s MC%u", p->core_count < 7 ? "G57" : "G77", p->core_count);
+}
+
 bool
 mali_device_name(const struct mali_kbase_gpu_props *p, char *buf, size_t size)
 {
-   /* Arch 9: product 0x9001 is the G57, the only one the
-    * T820 blob accepts; 0x9003 is Mesa's other G57 product
-    * ID (the T820 blob has no name for it and would call it
-    * "UNKNOWN", but our driver names the GPU from its own
-    * table, not the blob's). The T820 blob reports the bare
-    * name with no "MC<n>" suffix -- it has no "Mali-G57
-    * MC%d" format string, unlike the G615's r44p1 build.
-    * This driver reports that same bare name below, for
-    * both product IDs on arch 9. */
    if (p->arch_major == 9) {
-      const uint32_t product = p->product_id & 0xf00f;
-      if (product != 0x9001 && product != 0x9003)
-         return false;
-      snprintf(buf, size, "Mali-G57");
+      v9_device_name(p, buf, size);
       return true;
    }
    if (p->arch_major != MALI_PAN_ARCH)
@@ -332,6 +375,8 @@ get_features(struct vk_features *f, uint32_t arch)
       .largePoints = true,
       .alphaToOne = false,
       .multiViewport = false,
+      /* No minimum revision on v9: Mesa's model table lists none for the
+       * G57 or G68 (it does for some Bifrost parts). */
       .samplerAnisotropy = true,
       .textureCompressionETC2 = true,
       .textureCompressionASTC_LDR = true,
@@ -404,10 +449,10 @@ sample_counts(unsigned bytes_per_pixel, unsigned tilebuf_bytes)
 
 /*
  * v11 (G615): 32 KiB when the low byte of core_features is 3 or 4, else
- * 16 KiB. v9 (G57): a fixed 16 KiB -- both writers of the T820 blob's
- * tile-buffer-budget global store the same constant regardless of
- * core_features, and Mesa's model table gives the G57 the same fixed
- * 16 KiB.
+ * 16 KiB. v9: a fixed 16 KiB for every part. The four Arm drivers we have
+ * for arch 9 (G77, and G57 from three vendors) all store the same constant
+ * whatever core_features says, and Mesa's model table gives the G57 and
+ * G68 the same 16 KiB.
  */
 static unsigned
 tilebuf_budget(const struct mali_kbase_gpu_props *p)

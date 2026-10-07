@@ -221,16 +221,30 @@ tile_dims(uint32_t pixels, uint32_t *w, uint32_t *h)
    *h = pixels / *w;
 }
 
+/* The colour and depth tile buffer sizes of every arch 9 part. Mesa's
+ * model table lists the G57 and G68 with these sizes and has no G77, G78
+ * or G78AE entry, and Arm's drivers use one 16 KiB colour budget for all
+ * arch 9 parts. The table is not consulted on v9: a part it lacks would
+ * get the v11 budgets below, twice these. */
+#define V9_TILEBUF_COLOR 16384
+#define V9_TILEBUF_Z     8192
+
 /* pan_select_fb_tile_size for single-sampled framebuffers: the largest
  * power-of-two tile whose colour and depth fit half the tile buffer (the
  * other half lets the GPU pipeline tiles). */
 static void
 select_tile_size(struct mali_cmd_buffer *cmd, struct mali_render_state *r)
 {
-   const struct mali_physical_device *pdev = mali_device_physical(cmd->dev);
-   const struct pan_model *model = pan_get_model(pdev->props.gpu_id, 0);
-   const uint32_t rt_budget = model ? model->tilebuffer.color_size / 2 : 16384;
-   const uint32_t z_budget = model ? model->tilebuffer.z_size / 2 : 8192;
+   uint32_t rt_budget, z_budget;
+   if (PAN_ARCH < 10) {
+      rt_budget = V9_TILEBUF_COLOR / 2;
+      z_budget = V9_TILEBUF_Z / 2;
+   } else {
+      const struct mali_physical_device *pdev = mali_device_physical(cmd->dev);
+      const struct pan_model *model = pan_get_model(pdev->props.gpu_id, 0);
+      rt_budget = model ? model->tilebuffer.color_size / 2 : 16384;
+      z_budget = model ? model->tilebuffer.z_size / 2 : 8192;
+   }
 
    uint32_t rt_bytes = 0;
    for (unsigned i = 0; i < r->rt_count; i++) {
