@@ -307,6 +307,7 @@ cmd_destroy(struct vk_command_buffer *vk_cmd)
    mali_measure_cmd_destroy(cmd);
    fini_streams(cmd);
    cmd_release_memory(cmd);
+   mali_push_shadows_fini(&cmd->push_shadow, &cmd->vk.pool->alloc);
    vk_command_buffer_finish(&cmd->vk);
    vk_free(&cmd->vk.pool->alloc, cmd);
 }

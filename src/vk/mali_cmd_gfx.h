@@ -26,6 +26,7 @@
 
 #include "util/format/u_formats.h"
 #include "vulkan/vulkan_core.h"
+#include "vk_alloc.h"
 
 #include "kbase/kbase.h"
 #include "util/list.h"
@@ -79,6 +80,46 @@ struct mali_desc_state {
    uint32_t dyn_offsets[MALI_MAX_SETS][MALI_MAX_DYNAMIC_BUFFERS];
    struct mali_descriptor_set push[MALI_MAX_SETS];
 };
+
+/*
+ * The CPU-side copy of a push descriptor set's slots, in cached host
+ * memory. Command memory is CPU-uncached, and reading it back is slow
+ * (about 0.7 us for ARMSX2's texture set on the G57, once per draw), so a
+ * push that keeps bindings from the previous push reads them from here
+ * instead of from the previous push's block. A push writes its
+ * descriptors into the copy and then copies the whole set into its new
+ * block of command memory (mali_cmd_state.c, push_begin and push_end).
+ *
+ * One per bind point and set index, owned by the command buffer and kept
+ * across resets (the contents count only while push[idx] says the push is
+ * still current; a reset clears that). The command buffer's destroy frees
+ * them (mali_push_shadows_fini).
+ */
+struct mali_push_shadow {
+   void *data;
+   uint32_t size;            /* bytes allocated */
+};
+
+enum {
+   MALI_PUSH_SHADOW_GFX = 0,
+   MALI_PUSH_SHADOW_COMPUTE = 1,
+};
+
+struct mali_push_shadows {
+   struct mali_push_shadow s[2][MALI_MAX_SETS];
+};
+
+static inline void
+mali_push_shadows_fini(struct mali_push_shadows *ps, const VkAllocationCallbacks *alloc)
+{
+   for (unsigned b = 0; b < 2; b++) {
+      for (unsigned i = 0; i < MALI_MAX_SETS; i++) {
+         vk_free(alloc, ps->s[b][i].data);
+         ps->s[b][i].data = NULL;
+         ps->s[b][i].size = 0;
+      }
+   }
+}
 
 /* Layers one Tiler Context covers: 8 on v11, 1 on v9 (Mesa v9, panvk JM
  * and the T820 blob use one per layer). Per-arch code only. */

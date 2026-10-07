@@ -263,6 +263,10 @@ struct mali_cmd_buffer {
       struct mali_render_state render;
    } gfx;
 
+   /* Cached copies of push descriptor sets (outside gfx/compute, which a
+    * reset zeroes; freed at destroy). */
+   struct mali_push_shadows push_shadow;
+
    /* Thread-local storage shared by every job of the command buffer. */
    struct {
       uint32_t size;

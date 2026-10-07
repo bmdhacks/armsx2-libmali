@@ -14,6 +14,7 @@
 #include "mali_cmd_state.h"
 
 #include "vk_buffer.h"
+#include "vk_command_pool.h"
 #include "vk_descriptor_update_template.h"
 #include "vk_pipeline.h"
 #include "vk_pipeline_layout.h"
@@ -366,25 +367,56 @@ MALI_PER_ARCH(CmdBindDescriptorSets)(VkCommandBuffer commandBuffer, VkPipelineBi
  * when sets[idx] is still push[idx] and its layout has not changed; a real
  * vkCmdBindDescriptorSets at idx (which points sets[idx] elsewhere) or a
  * command buffer reset (which clears push[idx].layout) both make the next
- * push start over with nothing carried forward.
+ * push start over, from zeroed slots.
+ *
+ * The slots are written in the set's cached copy (struct mali_push_shadow:
+ * set->cpu points there, set->gpu at the new block), which holds what the
+ * previous push left, and push_end copies the finished set into the block.
+ * Command memory is never read by the CPU.
  */
-static struct mali_descriptor_set *
-cmd_push_descriptor_set(struct mali_cmd_buffer *cmd, struct mali_desc_state *st,
-                        const struct mali_descriptor_set_layout *layout, uint32_t idx)
+struct push_target {
+   struct mali_descriptor_set *set;
+   void *dst;                /* the new block's mapping; NULL: no slots */
+   uint32_t size;
+};
+
+static bool
+push_begin(struct mali_cmd_buffer *cmd, struct mali_desc_state *st, unsigned shadow_bp,
+           const struct mali_descriptor_set_layout *layout, uint32_t idx,
+           struct push_target *out)
 {
    struct mali_descriptor_set *set = &st->push[idx];
+   struct mali_push_shadow *sh = &cmd->push_shadow.s[shadow_bp][idx];
    const bool carry = st->sets[idx] == set && set->layout == layout;
-   const uint64_t size = (uint64_t)layout->desc_count * MALI_DESCRIPTOR_SIZE;
-   const void *old_cpu = set->cpu;
+   const uint32_t size = layout->desc_count * MALI_DESCRIPTOR_SIZE;
 
+   out->set = set;
+   out->dst = NULL;
+   out->size = size;
    if (size) {
+      if (size > sh->size) {
+         /* Only a new layout grows it, and a new layout carries nothing. */
+         assert(!carry);
+         vk_free(&cmd->vk.pool->alloc, sh->data);
+         sh->size = 0;
+         sh->data = vk_alloc(&cmd->vk.pool->alloc, size, 16,
+                             VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+         if (!sh->data) {
+            vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+            return false;
+         }
+         sh->size = size;
+      }
       struct mali_ptr p = mali_cmd_alloc(cmd, size, MALI_DESCRIPTOR_SIZE);
-      if (!p.cpu)
-         return NULL;
-      if (carry)
-         memcpy(p.cpu, old_cpu, size);
-      set->cpu = p.cpu;
+      if (!p.cpu) {
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+         return false;
+      }
+      if (!carry)
+         memset(sh->data, 0, size);
+      set->cpu = sh->data;
       set->gpu = p.gpu;
+      out->dst = p.cpu;
    } else {
       set->cpu = NULL;
       set->gpu = 0;
@@ -392,7 +424,14 @@ cmd_push_descriptor_set(struct mali_cmd_buffer *cmd, struct mali_desc_state *st,
    set->layout = layout;
    st->sets[idx] = set;
    MALI_PER_ARCH(descriptor_set_init_fixed_slots)(set);
-   return set;
+   return true;
+}
+
+static void
+push_end(const struct push_target *t)
+{
+   if (t->dst)
+      memcpy(t->dst, t->set->cpu, t->size);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -407,11 +446,16 @@ MALI_PER_ARCH(CmdPushDescriptorSet2KHR)(VkCommandBuffer commandBuffer,
       mali_descriptor_set_layout(layout->set_layouts[info->set]);
 
    struct mali_desc_state *states[2];
+   unsigned shadow_bp[2];
    unsigned n = 0;
-   if (info->stageFlags & VK_SHADER_STAGE_COMPUTE_BIT)
+   if (info->stageFlags & VK_SHADER_STAGE_COMPUTE_BIT) {
+      shadow_bp[n] = MALI_PUSH_SHADOW_COMPUTE;
       states[n++] = &cmd->compute.desc;
-   if (info->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS)
+   }
+   if (info->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS) {
+      shadow_bp[n] = MALI_PUSH_SHADOW_GFX;
       states[n++] = &cmd->gfx.desc;
+   }
 
    if (info->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS) {
       const uint32_t bit = BITFIELD_BIT(info->set);
@@ -420,14 +464,12 @@ MALI_PER_ARCH(CmdPushDescriptorSet2KHR)(VkCommandBuffer commandBuffer,
    }
 
    for (unsigned s = 0; s < n; s++) {
-      struct mali_descriptor_set *set =
-         cmd_push_descriptor_set(cmd, states[s], sl, info->set);
-      if (!set) {
-         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      struct push_target t;
+      if (!push_begin(cmd, states[s], shadow_bp[s], sl, info->set, &t))
          return;
-      }
-      MALI_PER_ARCH(descriptor_set_write)(set, info->descriptorWriteCount,
+      MALI_PER_ARCH(descriptor_set_write)(t.set, info->descriptorWriteCount,
                                           info->pDescriptorWrites);
+      push_end(&t);
    }
 }
 
@@ -446,8 +488,8 @@ MALI_PER_ARCH(CmdPushDescriptorSetWithTemplate2KHR)(
    const struct mali_descriptor_set_layout *sl =
       mali_descriptor_set_layout(layout->set_layouts[info->set]);
 
-   struct mali_desc_state *st = template->bind_point == VK_PIPELINE_BIND_POINT_COMPUTE ?
-                                   &cmd->compute.desc : &cmd->gfx.desc;
+   const bool compute = template->bind_point == VK_PIPELINE_BIND_POINT_COMPUTE;
+   struct mali_desc_state *st = compute ? &cmd->compute.desc : &cmd->gfx.desc;
 
    if (template->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS) {
       const uint32_t bit = BITFIELD_BIT(info->set);
@@ -455,11 +497,10 @@ MALI_PER_ARCH(CmdPushDescriptorSetWithTemplate2KHR)(
       cmd->gfx.draw.fs_sets_dirty |= bit;
    }
 
-   struct mali_descriptor_set *set = cmd_push_descriptor_set(cmd, st, sl, info->set);
-   if (!set) {
-      vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   struct push_target t;
+   if (!push_begin(cmd, st, compute ? MALI_PUSH_SHADOW_COMPUTE : MALI_PUSH_SHADOW_GFX, sl,
+                   info->set, &t))
       return;
-   }
 
    for (uint32_t i = 0; i < template->entry_count; i++) {
       const struct vk_descriptor_template_entry *e = &template->entries[i];
@@ -504,9 +545,10 @@ MALI_PER_ARCH(CmdPushDescriptorSetWithTemplate2KHR)(
             w1.pBufferInfo = src;
             break;
          }
-         MALI_PER_ARCH(descriptor_set_write)(set, 1, &w1);
+         MALI_PER_ARCH(descriptor_set_write)(t.set, 1, &w1);
       }
    }
+   push_end(&t);
 }
 
 VKAPI_ATTR void VKAPI_CALL
