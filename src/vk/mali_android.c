@@ -27,6 +27,7 @@
 #include <hardware/hwvulkan.h>
 
 #include "util/log.h"
+#include "util/u_call_once.h"
 #include "vk_log.h"
 #include "vk_util.h"
 
@@ -101,32 +102,29 @@ mali_hal_open(const struct hw_module_t *mod, const char *id, struct hw_device_t 
 /* ---------------------------------------------------------------------- */
 /* Gralloc usage                                                           */
 
-/*
- * The gralloc usage bits that keep Arm's gralloc from choosing AFBC, from
- * the property the blob reads. The property may not be readable from an
- * application's SELinux domain; then the RG 477V's value, which is Arm
- * gralloc's.
- */
+static uint64_t no_afbc_bits;
+static util_once_flag no_afbc_once = UTIL_ONCE_FLAG_INIT;
+
+static void
+no_afbc_usage_init(void)
+{
+   char buf[PROP_VALUE_MAX] = {0};
+   bool fallback;
+   __system_property_get("ro.vendor.arm.gralloc.no_afbc_usage_flags", buf);
+   no_afbc_bits = mali_wsi_no_afbc_usage(buf, &fallback);
+   if (fallback)
+      mesa_logw("malisx2: ro.vendor.arm.gralloc.no_afbc_usage_flags is not readable or "
+                "not a usable value (\"%s\"); asking gralloc for linear buffers with "
+                "usage 0x%llx instead", buf, (unsigned long long)no_afbc_bits);
+}
+
+/* The gralloc usage bits that keep gralloc from choosing AFBC; see
+ * mali_wsi_no_afbc_usage. */
 static uint64_t
 no_afbc_usage(void)
 {
-   static uint64_t value;
-   static bool known;
-   if (!known) {
-      char buf[PROP_VALUE_MAX] = {0};
-      value = MALI_GRALLOC_NO_AFBC_DEFAULT;
-      if (__system_property_get("ro.vendor.arm.gralloc.no_afbc_usage_flags", buf) > 0) {
-         char *end;
-         unsigned long long v = strtoull(buf, &end, 0);
-         if (end != buf)
-            value = v;
-      } else {
-         mesa_logi("malisx2: ro.vendor.arm.gralloc.no_afbc_usage_flags not readable, "
-                   "using 0x%llx", (unsigned long long)value);
-      }
-      known = true;
-   }
-   return value;
+   util_call_once(&no_afbc_once, no_afbc_usage_init);
+   return no_afbc_bits;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

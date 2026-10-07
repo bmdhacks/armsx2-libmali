@@ -28,9 +28,24 @@ struct mali_queue;
 #define MALI_GRALLOC_USAGE_HW_TEXTURE 0x100ull  /* GPU_TEXTURE (consumer) */
 #define MALI_GRALLOC_USAGE_HW_RENDER  0x200ull  /* GPU_RENDER_TARGET (producer) */
 
-/* The RG 477V's ro.vendor.arm.gralloc.no_afbc_usage_flags, used when the
- * property cannot be read. */
-#define MALI_GRALLOC_NO_AFBC_DEFAULT 0x0200000000000000ull
+#define MALI_GRALLOC_USAGE_CPU_READ_RARELY 0x2ull
+
+/*
+ * The usage bits that keep gralloc from choosing AFBC for a swapchain
+ * image, from the value of ro.vendor.arm.gralloc.no_afbc_usage_flags (NULL
+ * if the property could not be read). The property names the vendor usage
+ * bit that this device's gralloc takes as "no AFBC". Vendors pick
+ * different bits (0x20000000 on Unisoc, 0x0200000000000000 on MediaTek),
+ * and a bit gralloc does not know is ignored, which leaves AFBC on.
+ *
+ * The property is not always readable from an application (SELinux), or
+ * set. Then no vendor bit is guessed, since a wrong one is ignored or means
+ * something else to another vendor's gralloc. The usage is CPU read
+ * instead: Arm's gralloc allocates buffers the CPU can read as linear,
+ * whatever the vendor's encoding of "no AFBC" is. *fallback is set when the
+ * property gave no usable value (missing, not a number, or 0).
+ */
+uint64_t mali_wsi_no_afbc_usage(const char *property_value, bool *fallback);
 
 /*
  * The gralloc usage for swapchain images of this format and image usage

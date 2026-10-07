@@ -25,6 +25,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -59,6 +60,21 @@
 
 /* ---------------------------------------------------------------------- */
 /* Gralloc usage                                                           */
+
+uint64_t
+mali_wsi_no_afbc_usage(const char *property_value, bool *fallback)
+{
+   uint64_t value = 0;
+   if (property_value && property_value[0]) {
+      char *end;
+      errno = 0;
+      const unsigned long long v = strtoull(property_value, &end, 0);
+      if (errno == 0 && *end == '\0')
+         value = v;
+   }
+   *fallback = value == 0;
+   return value ? value : MALI_GRALLOC_USAGE_CPU_READ_RARELY;
+}
 
 VkResult
 mali_wsi_gralloc_usage(struct mali_physical_device *pdev, VkFormat format,
