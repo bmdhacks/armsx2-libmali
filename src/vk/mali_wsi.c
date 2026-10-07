@@ -33,6 +33,7 @@
 #include "util/log.h"
 #include "util/stack_array.h"
 #include "util/u_math.h"
+#include "vk_enum_to_str.h"
 #include "vk_fence.h"
 #include "vk_format.h"
 #include "vk_log.h"
@@ -248,6 +249,9 @@ mali_wsi_acquire(struct mali_device *dev, int fd, VkSemaphore semaphore, VkFence
       result = dev->vk.dispatch_table.ImportSemaphoreFdKHR(dev_h, &info);
       if (result == VK_SUCCESS)
          sem_fd = -1;
+      else
+         MALI_PER_ARCH(sync_file_log_error)(dev, "vkAcquireImageANDROID: semaphore import of",
+                                            sem_fd, vk_Result_to_str(result));
    }
    if (result == VK_SUCCESS && fence) {
       const VkImportFenceFdInfoKHR info = {
@@ -260,6 +264,9 @@ mali_wsi_acquire(struct mali_device *dev, int fd, VkSemaphore semaphore, VkFence
       result = dev->vk.dispatch_table.ImportFenceFdKHR(dev_h, &info);
       if (result == VK_SUCCESS)
          fence_fd = -1;
+      else
+         MALI_PER_ARCH(sync_file_log_error)(dev, "vkAcquireImageANDROID: fence import of",
+                                            fence_fd, vk_Result_to_str(result));
    }
 
    if (sem_fd >= 0)
@@ -335,8 +342,11 @@ MALI_PER_ARCH(wsi_release)(struct mali_queue *queue, uint32_t count, const VkSem
        * nothing then, and so do we. */
    }
    result = MALI_PER_ARCH(sync_file_create)(dev, nfds, fds, req, out_fd);
-   if (result != VK_SUCCESS)
+   if (result != VK_SUCCESS) {
+      MALI_PER_ARCH(sync_file_log_error)(dev, "vkQueueSignalReleaseImageANDROID: export to", -1,
+                                         vk_Result_to_str(result));
       goto out;
+   }
 
    /* Waiting consumes the payloads. */
    for (uint32_t i = 0; i < count; i++) {

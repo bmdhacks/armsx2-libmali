@@ -208,6 +208,13 @@ struct mali_device {
       uint64_t submits;
    } stats;
 
+   /* How many of each diagnostic the log has been offered
+    * (mali_diag_should_log), atomics. */
+   struct {
+      uint32_t slow_waits;          /* host or submit waits over 1 s */
+      uint32_t sync_file_errors;    /* sync-file import/export failures */
+   } diag;
+
    /* Command-stream state specific to the device's frontend: struct
     * mali_csf_device (CSF, v11) today; struct mali_jm_device (JM, v9)
     * once that frontend exists. Scoreboard facts, the event thread, the
@@ -275,6 +282,24 @@ mali_device_record_fault(struct mali_device *dev, const struct mali_device_fault
       dev->fault = *f;
       dev->fault.valid = true;
    }
+}
+
+/*
+ * Diagnostics that go to the log (logcat tag MESA on Android) whatever
+ * the build: a wait that blocks for MALI_SLOW_WAIT_NS or more, and each
+ * sync-file import or export that fails. Each kind is counted in
+ * mali_device::diag; the first 8 of a kind are logged, then every 100th,
+ * so something that repeats every frame does not flood the log. Returns
+ * whether to log this one; *n is its number (from 1).
+ */
+#define MALI_SLOW_WAIT_NS (1000ll * 1000 * 1000)
+
+static inline bool
+mali_diag_should_log(uint32_t *counter, uint32_t *n)
+{
+   const uint32_t i = __atomic_fetch_add(counter, 1, __ATOMIC_RELAXED);
+   *n = i + 1;
+   return i < 8 || (i + 1) % 100 == 0;
 }
 
 #endif

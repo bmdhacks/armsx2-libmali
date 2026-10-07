@@ -338,6 +338,42 @@ MALI_PER_ARCH(queue_reached)(struct mali_device *dev, const uint64_t req[MALI_SY
    return jd->queue->completed_seq >= req[0];
 }
 
+void
+MALI_PER_ARCH(queue_describe)(struct mali_device *dev, char *buf, size_t size)
+{
+   const struct mali_jm_device *jd = dev->jm;
+   if (!jd) {
+      snprintf(buf, size, "no job-manager state");
+      return;
+   }
+   const struct mali_jm_queue *q = jd->queue;
+   snprintf(buf, size,
+            "submission %llu sent, %llu completed; %u atoms in flight, %u numbers free; "
+            "%llu JOB_SUBMIT calls, %llu kernel events read, %llu fence waits, "
+            "%llu fence triggers%s%s",
+            (unsigned long long)(q ? q->seq : 0), (unsigned long long)(q ? q->completed_seq : 0),
+            jd->in_flight, jd->free_ids, (unsigned long long)jd->stats.job_submits,
+            (unsigned long long)jd->stats.events, (unsigned long long)jd->stats.fence_waits,
+            (unsigned long long)jd->stats.fence_triggers, jd->fault ? "; fault: " : "",
+            jd->fault ? jd->fault_msg : "");
+}
+
+/* The slow-wait log for the job manager's own blocking loops: once per
+ * wait, after MALI_SLOW_WAIT_NS. With dev->lock held. */
+static void
+jm_note_slow(struct mali_device *dev, int64_t start, bool *warned, const char *what)
+{
+   if (*warned || os_time_get_nano() - start < MALI_SLOW_WAIT_NS)
+      return;
+   *warned = true;
+   uint32_t n;
+   if (!mali_diag_should_log(&dev->diag.slow_waits, &n))
+      return;
+   char state[320];
+   MALI_PER_ARCH(queue_describe)(dev, state, sizeof(state));
+   mesa_logw("malisx2: %s has blocked for over 1 s (slow wait %u): %s", what, n, state);
+}
+
 /* Shared with timing.c's completed(), for a mc created by either
  * frontend. jd is NULL on a CSF device, in which case completed() never
  * calls this. */
@@ -512,6 +548,8 @@ take_number(struct mali_device *dev, unsigned reserve, uint8_t *num, VkResult *r
 {
    struct mali_jm_device *jd = dev->jm;
    struct mali_jm_build *b = jd->build;
+   const int64_t start = os_time_get_nano();
+   bool warned = false;
    for (;;) {
       if (dev->lost || jd->fault) {
          *result = VK_ERROR_DEVICE_LOST;
@@ -541,6 +579,7 @@ take_number(struct mali_device *dev, unsigned reserve, uint8_t *num, VkResult *r
          continue;
       }
       jd->stats.number_waits++;
+      jm_note_slow(dev, start, &warned, "waiting for a free job-manager atom number");
       mali_jm_wait_locked(dev, os_time_get_nano() + READER_SLICE_NS);
    }
 }
@@ -949,8 +988,13 @@ prepare_command_buffers(struct mali_device *dev, struct vk_queue_submit *submit)
       }
       if (!cmd->jm.submitted)
          continue;
-      while (q->completed_seq < cmd->jm.last_seq && !jd->fault && !dev->lost)
+      const int64_t start = os_time_get_nano();
+      bool warned = false;
+      while (q->completed_seq < cmd->jm.last_seq && !jd->fault && !dev->lost) {
+         jm_note_slow(dev, start, &warned,
+                      "vkQueueSubmit, waiting for a command buffer's previous run");
          mali_jm_wait_locked(dev, os_time_get_nano() + READER_SLICE_NS);
+      }
       if (jd->fault || dev->lost)
          return VK_ERROR_DEVICE_LOST;
       mali_jm_cmd_prepare_submit(cmd);

@@ -36,6 +36,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "util/list.h"
 #include "util/simple_mtx.h"
@@ -214,10 +215,27 @@ extern const struct vk_sync_type MALI_PER_ARCH(sync_type);
 /* Drop a sync's payload (close its sync file). With dev->lock held. */
 void MALI_PER_ARCH(sync_clear)(struct mali_sync *s);
 
+/* Log a failed sync-file import or export (mali_sync.c; thinned by
+ * mali_diag_should_log). op says which ("import of", "export to", ...);
+ * fd is -1 when there is none to name. Frontend-neutral. */
+void MALI_PER_ARCH(sync_file_log_error)(struct mali_device *dev, const char *op, int fd,
+                                        const char *why);
+
 /* With dev->lock held: has every subqueue reached req? (a fault in a done
  * slot counts as device loss, not as "reached"; mali_sync.c's own
  * dev->lost check covers that separately). */
 bool MALI_PER_ARCH(queue_reached)(struct mali_device *dev, const uint64_t req[MALI_SUBQUEUE_COUNT]);
+
+/* For the slow-wait log (mali_sync.c): the queue's state as one line.
+ * With dev->lock held. */
+static inline void
+MALI_PER_ARCH(queue_describe)(struct mali_device *dev, char *buf, size_t size)
+{
+   snprintf(buf, size, "%llu submits, %llu kernel events read, event thread %s",
+            (unsigned long long)dev->stats.submits,
+            (unsigned long long)dev->stats.kernel_events,
+            dev->csf && dev->csf->thread_running ? "running" : "not running");
+}
 
 /* Does an event thread wake host waits when the GPU finishes? (Decides
  * only how often a sleeping wait re-checks; mali_sync.c.) */
