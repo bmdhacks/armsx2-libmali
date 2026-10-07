@@ -19,6 +19,7 @@
 
 #include <errno.h>
 #include <poll.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "kbase_priv.h"
@@ -104,6 +105,7 @@ mali_kbase_jm_submit(struct mali_kbase *kb, const struct kb_jm_atom *atoms, unsi
    if (!kb || (n && !atoms))
       return MALI_KBASE_ERROR_INVALID_ARGUMENT;
 
+   const bool frame_nr = kb->jm_atom_layout == MALI_KBASE_JM_ATOM_FRAME_NR;
    for (unsigned off = 0; off < n; off += MALI_KBASE_JM_MAX_ATOMS_PER_SUBMIT) {
       unsigned batch = n - off;
       if (batch > MALI_KBASE_JM_MAX_ATOMS_PER_SUBMIT)
@@ -114,6 +116,16 @@ mali_kbase_jm_submit(struct mali_kbase *kb, const struct kb_jm_atom *atoms, unsi
          .nr_atoms = batch,
          .stride = sizeof(struct kb_jm_atom),
       };
+      /* 18 KiB on the stack for a full batch, only on kernels with the
+       * frame-number field. */
+      struct kb_jm_atom_frame_nr wide[frame_nr ? batch : 1];
+      if (frame_nr) {
+         memset(wide, 0, sizeof(wide));
+         for (unsigned i = 0; i < batch; i++)
+            wide[i].atom = atoms[off + i];
+         s.addr = (uint64_t)(uintptr_t)wide;
+         s.stride = sizeof(struct kb_jm_atom_frame_nr);
+      }
       long ret = kb_ioctl(kb, KB_JM_IOCTL_JOB_SUBMIT, &s);
       if (ret < 0) {
          KB_LOG(kb, "JOB_SUBMIT of %u atoms (offset %u of %u) failed: %s", batch, off, n,
@@ -122,6 +134,108 @@ mali_kbase_jm_submit(struct mali_kbase *kb, const struct kb_jm_atom *atoms, unsi
       }
    }
    return MALI_KBASE_SUCCESS;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Atom layout probe                                                       */
+
+/* The probe atom's number and udata. The number is free again once its
+ * event is read, before anyone else can submit on the context. */
+#define PROBE_ATOM_NUMBER 1
+#define PROBE_UDATA0 0x6d616c6973783270ull /* arbitrary, checked on return */
+#define PROBE_UDATA1 0x61746f6d2d70726full
+
+/* A dependency-only atom with no dependencies completes inside the
+ * JOB_SUBMIT call (jd_submit_atom resolves it at once), so its event is
+ * pending by the time the ioctl returns; this only bounds the wait. */
+#define PROBE_EVENT_TIMEOUT_MS 1000
+
+enum mali_kbase_result
+kb_jm_probe_atom_layout(struct mali_kbase *kb)
+{
+   struct kb_jm_atom_frame_nr probe;
+   memset(&probe, 0, sizeof(probe));
+   probe.atom.atom_number = PROBE_ATOM_NUMBER;
+   probe.atom.prio = KB_JM_PRIO_MEDIUM;
+   probe.atom.core_req = KB_JM_REQ_DEP;
+   probe.atom.udata[0] = PROBE_UDATA0;
+   probe.atom.udata[1] = PROBE_UDATA1;
+
+   struct kb_jm_job_submit s = {
+      .addr = (uint64_t)(uintptr_t)&probe,
+      .nr_atoms = 1,
+      .stride = sizeof(probe),
+   };
+   long ret = kb_ioctl(kb, KB_JM_IOCTL_JOB_SUBMIT, &s);
+   if (ret == -EINVAL) {
+      /* The stride check comes before any atom is read: nothing was
+       * submitted, nothing will complete. */
+      kb->jm_atom_layout = MALI_KBASE_JM_ATOM_STOCK;
+      kb->jm_probe_errno = EINVAL;
+      return MALI_KBASE_SUCCESS;
+   }
+   if (ret < 0) {
+      KB_LOG(kb, "JOB_SUBMIT of the atom-layout probe failed: %s", strerror((int)-ret));
+      return kb_result_from_errno((int)-ret, KB_ERRNO_GENERIC);
+   }
+
+   kb->jm_atom_layout = MALI_KBASE_JM_ATOM_FRAME_NR;
+   kb->jm_probe_errno = 0;
+
+   struct kb_jm_event ev;
+   unsigned n = 0;
+   const int slice = 50;
+   for (int waited = 0; !n && waited <= PROBE_EVENT_TIMEOUT_MS; waited += slice) {
+      enum mali_kbase_result r = mali_kbase_jm_read_events(kb, &ev, 1, &n, NULL);
+      if (r != MALI_KBASE_SUCCESS)
+         return r;
+      if (!n && mali_kbase_jm_poll(kb, slice) < 0 && errno != EINTR) {
+         KB_LOG(kb, "poll for the atom-layout probe's event failed: %s", strerror(errno));
+         return MALI_KBASE_ERROR_KERNEL;
+      }
+   }
+   if (!n) {
+      /* Atom 1 would still be in flight in the kernel and its event
+       * would turn up later as one nobody submitted. */
+      KB_LOG(kb, "the kernel accepted a 72-byte atom but posted no event for it "
+                 "within %d ms; refusing the device",
+             PROBE_EVENT_TIMEOUT_MS);
+      return MALI_KBASE_ERROR_INCOMPATIBLE_KERNEL;
+   }
+   kb->jm_probe_event = ev.event_code;
+   if (ev.atom_number != PROBE_ATOM_NUMBER || ev.udata[0] != PROBE_UDATA0 ||
+       ev.udata[1] != PROBE_UDATA1) {
+      /* Accepted, but not read where we put the fields: a layout we do
+       * not know. Submitting real work would run garbage. */
+      KB_LOG(kb, "the kernel accepted a 72-byte atom but returned atom %u udata "
+                 "0x%llx 0x%llx (event 0x%x); unknown atom layout, refusing the device",
+             ev.atom_number, (unsigned long long)ev.udata[0],
+             (unsigned long long)ev.udata[1], ev.event_code);
+      return MALI_KBASE_ERROR_INCOMPATIBLE_KERNEL;
+   }
+   /* Any code is fine here: the kernel parsed the atom where we put it.
+    * A code other than DONE (some of these kernels are said to terminate
+    * the first atom of a new context) is reported by
+    * mali_kbase_jm_atom_layout_str. */
+   return MALI_KBASE_SUCCESS;
+}
+
+const char *
+mali_kbase_jm_atom_layout_str(const struct mali_kbase *kb, char *buf, size_t size)
+{
+   if (kb->jm_atom_layout == MALI_KBASE_JM_ATOM_FRAME_NR) {
+      snprintf(buf, size,
+               "72-byte atoms with frame_nr (MediaTek kbase): the kernel accepted "
+               "stride 72, probe atom completed with 0x%x%s",
+               kb->jm_probe_event,
+               kb->jm_probe_event == KB_JM_EVENT_DONE ? " (done)"
+               : kb->jm_probe_event == KB_JM_EVENT_TERMINATED ? " (terminated)"
+                                                              : "");
+   } else {
+      snprintf(buf, size, "64-byte atoms (stock kbase): the kernel refused stride 72 (%s)",
+               strerror(kb->jm_probe_errno));
+   }
+   return buf;
 }
 
 /* ---------------------------------------------------------------------- */

@@ -277,6 +277,12 @@ mali_CreateDevice(VkPhysicalDevice physicalDevice,
       vk_free2(&instance->vk.alloc, pAllocator, dev);
       return result;
    }
+   if (dev->kbase->frontend == MALI_KBASE_FRONTEND_JM) {
+      /* No "malisx2:" prefix: this is information, not a warning. */
+      char layout[192];
+      mesa_logi("malisx2 job-manager atom layout: %s",
+                mali_kbase_jm_atom_layout_str(dev->kbase, layout, sizeof(layout)));
+   }
 
    /* Shaders: kraid must be the compiler, code goes to the executable
     * zone, and pipelines created without a VkPipelineCache still share

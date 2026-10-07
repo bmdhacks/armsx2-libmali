@@ -39,4 +39,8 @@ kb_ioctl(struct mali_kbase *kb, unsigned long request, void *arg)
    return ret < 0 ? -(long)errno : ret;
 }
 
+/* jm.c: pick the context's atom layout with one stride-72 JOB_SUBMIT
+ * (mali_kbase_create, job manager only, last step). */
+enum mali_kbase_result kb_jm_probe_atom_layout(struct mali_kbase *kb);
+
 #endif /* MALI_KBASE_PRIV_H */

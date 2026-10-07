@@ -79,9 +79,9 @@
 struct kb_jm_job_submit {
    uint64_t addr;     /* user pointer to an array of struct kb_jm_atom */
    uint32_t nr_atoms;
-   uint32_t stride;   /* sizeof(struct kb_jm_atom); 56 and 48 also accepted
-                         (base_jd_atom_v2 with and without renderpass_id),
-                         not used by this driver */
+   uint32_t stride;   /* sizeof(struct kb_jm_atom), or on a kernel with the
+                         frame-number field sizeof(struct
+                         kb_jm_atom_frame_nr); see below */
 };
 
 #define KB_JM_IOCTL_JOB_SUBMIT _IOW(KB_IOCTL_TYPE, 2, struct kb_jm_job_submit)
@@ -118,10 +118,11 @@ struct kb_jm_dep {
 #define KB_JM_DEP_ORDER   (1u << 1)
 
 /*
- * struct base_jd_atom ("v3": base_jd_atom_v2 plus a leading seq_nr),
- * the 64-byte layout this driver always submits, with every offset
- * below checked against both the r40p0 and r44p1 kernel headers'
- * structs.
+ * struct base_jd_atom ("v3": base_jd_atom_v2 plus a leading seq_nr), the
+ * 64-byte layout this driver builds and submits on stock kernels, with
+ * every offset below checked against both the r40p0 and r44p1 kernel
+ * headers' structs. kb_jm_atom_frame_nr below is the same atom as
+ * MediaTek kernels with the frame-number field want it.
  */
 struct kb_jm_atom {
    uint64_t seq_nr;
@@ -139,6 +140,27 @@ struct kb_jm_atom {
    uint8_t renderpass_id;  /* incremental rendering; not used (compiled out
                               of the T820 kernel) */
    uint8_t padding[7];     /* must be zero */
+};
+
+/*
+ * MediaTek's kbase builds with the job-manager variant of their GPU
+ * bandwidth monitor enabled add a u32 frame_nr at the end of both atom
+ * structs. base_jd_atom becomes 72 bytes (64 + 4, rounded up to its 8-byte
+ * alignment) and base_jd_atom_v2 becomes 64. Those kernels accept stride
+ * 64 and 72 only, and read stride 64 as base_jd_atom_v2: a stock 64-byte
+ * atom submitted there is read 8 bytes off (seq_nr as jc, and so on).
+ * Stock kernels refuse stride 72 with EINVAL before looking at any atom,
+ * which is how mali_kbase_create tells the two apart.
+ *
+ * The kernel copies frame_nr into its atom and hands it, with the context
+ * id and an atom serial, to the SoC's bandwidth-monitor shared memory when
+ * the atom starts on job slot 0. Nothing in the job path reads it.
+ */
+struct kb_jm_atom_frame_nr {
+   struct kb_jm_atom atom;
+   uint32_t frame_nr;
+   uint32_t tail;          /* the struct's trailing alignment padding; the
+                              kernel copies it but does not check it */
 };
 
 #define KB_JM_PRIO_MEDIUM   0
@@ -287,6 +309,9 @@ KB_CHECK_OFF(struct kb_jm_atom, padding, 57);
 _Static_assert(sizeof(struct kb_jm_atom) - 8 == 56, "base_jd_atom_v2 size");
 _Static_assert(offsetof(struct kb_jm_atom, renderpass_id) - 8 == 48,
                "base_jd_atom_v2.renderpass_id");
+
+KB_CHECK_SIZE(struct kb_jm_atom_frame_nr, 72);
+KB_CHECK_OFF(struct kb_jm_atom_frame_nr, frame_nr, 64);
 
 KB_CHECK_SIZE(struct kb_jm_event, 24);
 KB_CHECK_OFF(struct kb_jm_event, atom_number, 4);

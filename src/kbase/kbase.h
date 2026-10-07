@@ -232,6 +232,15 @@ enum mali_kbase_frontend {
    MALI_KBASE_FRONTEND_JM = 1,
 };
 
+/*
+ * The atom layout JOB_SUBMIT takes on a job-manager context (uapi_jm.h,
+ * struct kb_jm_atom_frame_nr, says how the two differ).
+ */
+enum mali_kbase_jm_atom_layout {
+   MALI_KBASE_JM_ATOM_STOCK = 0,  /* base_jd_atom, stride 64 */
+   MALI_KBASE_JM_ATOM_FRAME_NR,   /* base_jd_atom + u32 frame_nr, stride 72 */
+};
+
 typedef void (*mali_kbase_log_fn)(void *user, const char *msg);
 
 struct mali_kbase_create_info {
@@ -264,6 +273,13 @@ struct mali_kbase {
     * kept only so mali_kbase_destroy can munmap it. Job manager only; NULL
     * on CSF. */
    void *jm_tracking_page;
+   /* Job manager only: the atom layout mali_kbase_create's probe found,
+    * and what the probe saw. jm_probe_errno is the errno of the stride-72
+    * JOB_SUBMIT (0: accepted); jm_probe_event the event code its atom
+    * completed with when it was accepted. */
+   enum mali_kbase_jm_atom_layout jm_atom_layout;
+   int jm_probe_errno;
+   uint32_t jm_probe_event;
    /* SET_FLAGS succeeded: the kernel context exists. */
    bool context_created;
    /* mali_kbase_abandon was called. */
@@ -289,7 +305,12 @@ struct mali_kbase {
  *      page (BASE_MEM_MAP_TRACKING_HANDLE, required before any
  *      allocation on this kernel), GET_GPUPROPS, MEM_EXEC_INIT,
  *      MEM_JIT_INIT (trim level 0; we do not use JIT memory, see
- *      mali_kbase_alloc).
+ *      mali_kbase_alloc). Then one JOB_SUBMIT of a dependency-only atom
+ *      at stride 72 picks the atom layout: EINVAL means a stock kernel
+ *      (64-byte base_jd_atom); acceptance means the MediaTek frame_nr
+ *      layout, and the atom's completion event is read back before
+ *      returning, so no event or atom number is left over for the
+ *      caller.
  *   3. If neither answer matches, INCOMPATIBLE_KERNEL, logging both
  *      refusals.
  *
@@ -534,13 +555,21 @@ bool mali_kbase_jm_atom_ids_used(const struct mali_kbase_jm_atom_ids *ids, uint8
 unsigned mali_kbase_jm_atom_ids_free_count(const struct mali_kbase_jm_atom_ids *ids);
 
 /*
+ * One line saying which atom layout the context uses and why, for the
+ * driver's log. Returns buf.
+ */
+const char *mali_kbase_jm_atom_layout_str(const struct mali_kbase *kb, char *buf, size_t size);
+
+/*
  * JOB_SUBMIT: submits exactly the atoms the caller built (dependencies,
  * core_req, atom numbers already filled in; this layer does not interpret
  * them). More than 256 atoms, the T820 kernel's limit per ioctl call (jm.c
  * says why), are split across as many JOB_SUBMIT calls as needed; nothing
  * else is done between them (no per-edge round trip — the whole
  * dependency graph is submitted with pre_dep already resolved by the
- * caller). n may be 0 (no-op).
+ * caller). n may be 0 (no-op). The atoms are always built as struct
+ * kb_jm_atom; on a MALI_KBASE_JM_ATOM_FRAME_NR context each is copied into
+ * the 72-byte layout (frame_nr 0) on the way in.
  */
 enum mali_kbase_result
 mali_kbase_jm_submit(struct mali_kbase *kb, const struct kb_jm_atom *atoms, unsigned n);

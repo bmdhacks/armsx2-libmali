@@ -387,6 +387,8 @@ mali_kbase_create(const struct mali_kbase_create_info *info, struct mali_kbase *
       r = exec_init(kb);
    if (r == MALI_KBASE_SUCCESS)
       r = jit_init(kb);
+   if (r == MALI_KBASE_SUCCESS && kb->frontend == MALI_KBASE_FRONTEND_JM)
+      r = kb_jm_probe_atom_layout(kb);
 
    if (r != MALI_KBASE_SUCCESS) {
       release(kb);
