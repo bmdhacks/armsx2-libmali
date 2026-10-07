@@ -97,6 +97,9 @@ struct mali_jm_chain {
    uint16_t tiler_dep;      /* index of the last tiler-side job */
    uint32_t jobs;
    uint8_t pending;         /* MALI_JM_PENDING_* */
+   /* The chain writes system timestamps: its atom asks for PERMON, without
+    * which the kernel leaves the GPU's timestamp counter stopped. */
+   bool timestamps;
 };
 
 /* A run of fragment jobs submitted as one fragment atom. */

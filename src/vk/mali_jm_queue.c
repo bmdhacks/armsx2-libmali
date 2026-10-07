@@ -775,6 +775,16 @@ udata_of(unsigned cmd, unsigned batch)
    return ((uint64_t)(cmd & 0xffff) << 32) | ((uint64_t)(batch & 0xffff) << 16);
 }
 
+/* Extra core_req bits a chain needs: PERMON when it writes system
+ * timestamps (queries, MALISX2_MEASURE), which keeps the GPU's timestamp
+ * counter running while the atom is on the GPU, as the blob does for its
+ * query chains. */
+static inline uint32_t
+chain_req(const struct mali_jm_chain *c)
+{
+   return c->timestamps ? KB_JM_REQ_PERMON : 0;
+}
+
 /* The atom graph of the submit's waits and command buffers (file
  * comment). With dev->lock held and the build begun. batch_frag has room
  * for the largest command buffer's batch count, allocated before the
@@ -858,9 +868,9 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit, mali_jm_re
             }
             if (bt->heap_slot >= 0 && bt->heap_slot < MALI_JM_HEAP_SLOTS_MAX)
                req = newer(req, q->heap_last_frag[bt->heap_slot]);
-            vtc = mali_jm_build_atom(dev, MALI_JM_ATOM_VTC, MALI_JM_SLOT_VTC, MALI_JM_REQ_VTC,
-                                     bt->vtc.first, NULL, ud, q->last[MALI_JM_SLOT_VTC], req,
-                                     &result);
+            vtc = mali_jm_build_atom(dev, MALI_JM_ATOM_VTC, MALI_JM_SLOT_VTC,
+                                     MALI_JM_REQ_VTC | chain_req(&bt->vtc), bt->vtc.first,
+                                     NULL, ud, q->last[MALI_JM_SLOT_VTC], req, &result);
             if (!vtc)
                return result;
             frag_req = 0;
@@ -876,7 +886,8 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit, mali_jm_re
             if (!d && (bt->frag_after_vtc || (q->carry & MALI_JM_REQ_FRAG_AFTER_VTC)))
                d = q->last[MALI_JM_SLOT_VTC];
             frag = mali_jm_build_atom(dev, MALI_JM_ATOM_FRAG, MALI_JM_SLOT_FRAG,
-                                      MALI_JM_REQ_FRAG, seg->chain.first, NULL, ud, d,
+                                      MALI_JM_REQ_FRAG | chain_req(&seg->chain),
+                                      seg->chain.first, NULL, ud, d,
                                       q->last[MALI_JM_SLOT_FRAG], &result);
             if (!frag)
                return result;

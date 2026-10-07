@@ -305,6 +305,8 @@ mali_jm_cmd_write_value(struct mali_cmd_buffer *cmd, struct mali_jm_chain *c,
                           barrier, 0);
    if (!j.cpu)
       return false;
+   if (type == MALI_WRITE_VALUE_TYPE_SYSTEM_TIMESTAMP)
+      c->timestamps = true;
    pan_section_pack(j.cpu, WRITE_VALUE_JOB, PAYLOAD, p) {
       p.address = addr;
       p.type = type;
