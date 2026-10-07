@@ -53,7 +53,8 @@
  *
  * What is still owed when the command buffer ends goes to the queue
  * (mali_jm_cmd::end_req), which applies it to the next atoms of later
- * command buffers, as a barrier's second scope requires.
+ * command buffers, as a barrier's second scope requires; a transfer-only
+ * requirement there, again only to the next vtc chain with a transfer job.
  */
 
 #include "mali_cmd_state.h"
@@ -447,6 +448,8 @@ vtc_chain(struct mali_cmd_buffer *cmd, bool xfer)
          met |= REQ_XVTC_AFTER_FRAG_XFER;
       cmd->jm.req &= ~met;
    }
+   if (xfer)
+      b->vtc_xfer = true;
    return &b->vtc;
 }
 
@@ -718,12 +721,23 @@ MALI_PER_ARCH(EndCommandBuffer)(VkCommandBuffer commandBuffer)
     * between atoms. */
    const uint16_t req = cmd->jm.req;
    cmd->jm.end_req = 0;
-   /* Later command buffers' vtc atoms are not told apart by kind: the
-    * transfer-only requirements apply to all of them. */
-   if (req & (REQ_VTC_AFTER_FRAG | REQ_XVTC_AFTER_FRAG))
+   /* The transfer-only requirements stay transfer-only: in later command
+    * buffers only a batch whose vtc chain has a transfer job waits for
+    * them (mali_jm_batch::vtc_xfer). Applying them to every vtc atom would
+    * hold the next frame's tiling behind all of this frame's fragment work
+    * whenever the frame ends with a "colour output -> transfer" barrier
+    * whose copy ran on the fragment slot, which is how ARMSX2 ends most
+    * frames. */
+   if (req & REQ_VTC_AFTER_FRAG)
       cmd->jm.end_req |= MALI_JM_REQ_VTC_AFTER_FRAG;
-   else if (req & (REQ_VTC_AFTER_FRAG_XFER | REQ_XVTC_AFTER_FRAG_XFER))
-      cmd->jm.end_req |= MALI_JM_REQ_VTC_AFTER_FRAG_XFER;
+   else if (req & REQ_XVTC_AFTER_FRAG)
+      cmd->jm.end_req |= MALI_JM_REQ_XVTC_AFTER_FRAG;
+   if (!(req & REQ_VTC_AFTER_FRAG)) {
+      if (req & REQ_VTC_AFTER_FRAG_XFER)
+         cmd->jm.end_req |= MALI_JM_REQ_VTC_AFTER_FRAG_XFER;
+      else if ((req & REQ_XVTC_AFTER_FRAG_XFER) && !(req & REQ_XVTC_AFTER_FRAG))
+         cmd->jm.end_req |= MALI_JM_REQ_XVTC_AFTER_FRAG_XFER;
+   }
    if (req & REQ_FRAG_AFTER_VTC)
       cmd->jm.end_req |= MALI_JM_REQ_FRAG_AFTER_VTC;
    cmd->jm.req = 0;

@@ -130,6 +130,10 @@ struct mali_jm_batch {
                                must follow the vtc work submitted before it */
    bool frag_xfer;          /* its fragment segments carry transfer work
                                (MALI_JM_AFTER_EARLIER_XFER) */
+   bool vtc_xfer;           /* its vtc chain has a transfer job (a compute
+                               copy, fill or update): it meets a transfer-
+                               only requirement carried from an earlier
+                               command buffer (mali_jm_queue::xvtc_frag) */
    uint32_t passes, draws;
    uint64_t est_heap_bytes; /* estimated tiler heap use, for batch closing */
    uint64_t heap_desc;      /* the Tiler Heap descriptor every pass of the
@@ -172,6 +176,11 @@ struct mali_jm_batch {
 #define MALI_JM_REQ_VTC_AFTER_FRAG      (1u << 0)
 #define MALI_JM_REQ_FRAG_AFTER_VTC      (1u << 1)
 #define MALI_JM_REQ_VTC_AFTER_FRAG_XFER (1u << 2)
+/* The same two requirements of barriers whose vtc-slot destination stages
+ * are only transfer stages: only the next vtc chain with a transfer job
+ * (mali_jm_batch::vtc_xfer) waits, not the next frame's tiling. */
+#define MALI_JM_REQ_XVTC_AFTER_FRAG      (1u << 3)
+#define MALI_JM_REQ_XVTC_AFTER_FRAG_XFER (1u << 4)
 
 /* A GPU-written range to restore before a command buffer runs again
  * (mali_jm_cmd::resets): size bytes at dst, from data_off in
@@ -629,8 +638,14 @@ struct mali_jm_queue {
     * work (MALI_JM_AFTER_EARLIER_XFER). */
    mali_jm_ref last_frag_xfer;
    /* Barrier requirements (MALI_JM_REQ_*) recorded at the end of a
-    * command buffer and not yet met by a later atom. */
+    * command buffer and not yet met by a later atom; the transfer-only
+    * ones are kept as xvtc_frag instead. */
    uint8_t carry;
+   /* The newest fragment atom the next vtc chain with a transfer job has
+    * to wait for (MALI_JM_REQ_XVTC_*: everything, or the fragment-side
+    * transfers, up to the end of the command buffer that asked); 0 when
+    * nothing is owed. */
+   mali_jm_ref xvtc_frag;
 };
 
 VkResult MALI_PER_ARCH(device_init)(struct mali_device *dev);

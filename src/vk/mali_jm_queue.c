@@ -868,6 +868,16 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit, mali_jm_re
             }
             if (bt->heap_slot >= 0 && bt->heap_slot < MALI_JM_HEAP_SLOTS_MAX)
                req = newer(req, q->heap_last_frag[bt->heap_slot]);
+            /* A transfer-only requirement carried from an earlier command
+             * buffer: met by the first vtc chain with a transfer job, or
+             * by any vtc atom that waits for as much anyway (later vtc
+             * atoms follow it in the slot order). */
+            if (q->xvtc_frag) {
+               if (bt->vtc_xfer)
+                  req = newer(req, q->xvtc_frag);
+               if (req && newer(req, q->xvtc_frag) == req)
+                  q->xvtc_frag = 0;
+            }
             vtc = mali_jm_build_atom(dev, MALI_JM_ATOM_VTC, MALI_JM_SLOT_VTC,
                                      MALI_JM_REQ_VTC | chain_req(&bt->vtc), bt->vtc.first,
                                      NULL, ud, q->last[MALI_JM_SLOT_VTC], req, &result);
@@ -902,7 +912,12 @@ build_submit(struct mali_device *dev, struct vk_queue_submit *submit, mali_jm_re
       }
       /* Barriers at its end order the next atoms of later command
        * buffers (and submissions). */
-      q->carry |= cmd->jm.end_req;
+      q->carry |= cmd->jm.end_req & (MALI_JM_REQ_VTC_AFTER_FRAG | MALI_JM_REQ_FRAG_AFTER_VTC |
+                                     MALI_JM_REQ_VTC_AFTER_FRAG_XFER);
+      if (cmd->jm.end_req & MALI_JM_REQ_XVTC_AFTER_FRAG)
+         q->xvtc_frag = newer(q->xvtc_frag, q->last[MALI_JM_SLOT_FRAG]);
+      else if (cmd->jm.end_req & MALI_JM_REQ_XVTC_AFTER_FRAG_XFER)
+         q->xvtc_frag = newer(q->xvtc_frag, q->last_frag_xfer);
    }
    return VK_SUCCESS;
 }
