@@ -133,32 +133,39 @@ lower_load(nir_builder *b, nir_intrinsic_instr *intr, void *data)
       nir_push_if(b, is_color);
       {
          nir_def *conversion = nir_load_input_attachment_conv_pan(b, index_ssa);
-         nir_def *is_read_only =
-            nir_i2b(b, nir_iand_imm(b, nir_ishl(b, nir_imm_int(b, 1), target),
-                                    ctx->ro_color_mask));
-         nir_def *load_ro, *load_rw;
-
          iosem.location = FRAG_RESULT_DATA0;
-         nir_push_if(b, is_read_only);
-         {
-            load_ro = nir_load_tile_res_pan(
+         if (!ctx->ro_color_mask) {
+            load_color = nir_load_tile_pan(
                b, intr->def.num_components, intr->def.bit_size,
                pan_nir_tile_rt_sample(b, target, intr->src[2].ssa),
                pan_nir_tile_default_coverage(b), conversion,
                .dest_type = dest_type, .access = nir_intrinsic_access(intr),
                .io_semantics = iosem);
+         } else {
+            nir_def *is_read_only = nir_i2b(
+               b, nir_iand_imm(b, nir_ishl(b, nir_imm_int(b, 1), target), ctx->ro_color_mask));
+            nir_def *load_ro, *load_rw;
+            nir_push_if(b, is_read_only);
+            {
+               load_ro = nir_load_tile_res_pan(
+                  b, intr->def.num_components, intr->def.bit_size,
+                  pan_nir_tile_rt_sample(b, target, intr->src[2].ssa),
+                  pan_nir_tile_default_coverage(b), conversion,
+                  .dest_type = dest_type, .access = nir_intrinsic_access(intr),
+                  .io_semantics = iosem);
+            }
+            nir_push_else(b, NULL);
+            {
+               load_rw = nir_load_tile_pan(
+                  b, intr->def.num_components, intr->def.bit_size,
+                  pan_nir_tile_rt_sample(b, target, intr->src[2].ssa),
+                  pan_nir_tile_default_coverage(b), conversion,
+                  .dest_type = dest_type, .access = nir_intrinsic_access(intr),
+                  .io_semantics = iosem);
+            }
+            nir_pop_if(b, NULL);
+            load_color = nir_if_phi(b, load_ro, load_rw);
          }
-         nir_push_else(b, NULL);
-         {
-            load_rw = nir_load_tile_pan(
-               b, intr->def.num_components, intr->def.bit_size,
-               pan_nir_tile_rt_sample(b, target, intr->src[2].ssa),
-               pan_nir_tile_default_coverage(b), conversion,
-               .dest_type = dest_type, .access = nir_intrinsic_access(intr),
-               .io_semantics = iosem);
-         }
-         nir_pop_if(b, NULL);
-         load_color = nir_if_phi(b, load_ro, load_rw);
       }
       nir_push_else(b, NULL);
       {
@@ -307,13 +314,15 @@ dedup_subpass_loads(nir_shader *nir)
 }
 
 bool
-mali_nir_lower_input_attachment_loads(nir_shader *nir,
+mali_nir_lower_input_attachment_loads(nir_shader *nir, unsigned arch,
                                       const struct vk_graphics_pipeline_state *state,
                                       uint32_t *input_attachment_read)
 {
    bool progress = false;
+   /* The read-only tile load (LD_TILE with the resource wait) exists from
+    * v10 on; v9 reads every colour attachment with the plain tile load. */
    struct ia_ctx ctx = {
-      .ro_color_mask = readonly_color_mask(nir, state),
+      .ro_color_mask = arch >= 10 ? readonly_color_mask(nir, state) : 0,
    };
 
    NIR_PASS(progress, nir, dedup_subpass_loads);

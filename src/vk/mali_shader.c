@@ -1582,8 +1582,8 @@ MALI_PER_ARCH(shader_compile)(struct mali_device *dev,
          nir->info.fs.uses_sample_shading = true;
 
       /* Input attachments before descriptors. */
-      NIR_PASS(_, nir, mali_nir_lower_input_attachment_loads, state,
-               &s->fs.input_attachment_read);
+      NIR_PASS(_, nir, mali_nir_lower_input_attachment_loads, PAN_ARCH,
+               state, &s->fs.input_attachment_read);
 
       /* Input slots first: their count sizes the front of the driver
        * table (mali_shader.h). */

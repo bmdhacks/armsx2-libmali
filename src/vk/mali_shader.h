@@ -365,7 +365,7 @@ void mali_nir_lower_descriptors(nir_shader *nir,
                                 const struct vk_pipeline_robustness_state *rs,
                                 const struct vk_pipeline_layout *layout,
                                 struct mali_shader_desc_info *desc_info);
-bool mali_nir_lower_input_attachment_loads(nir_shader *nir,
+bool mali_nir_lower_input_attachment_loads(nir_shader *nir, unsigned arch,
                                            const struct vk_graphics_pipeline_state *state,
                                            uint32_t *input_attachment_read);
 
