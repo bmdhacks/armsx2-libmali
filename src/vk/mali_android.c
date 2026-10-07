@@ -102,33 +102,25 @@ mali_hal_open(const struct hw_module_t *mod, const char *id, struct hw_device_t 
 /* ---------------------------------------------------------------------- */
 /* Gralloc usage                                                           */
 
-static uint64_t no_afbc_bits;
-static bool no_afbc_fallback;
+static char no_afbc_property[PROP_VALUE_MAX];
 static util_once_flag no_afbc_once = UTIL_ONCE_FLAG_INIT;
 
 static void
 no_afbc_usage_init(void)
 {
-   char buf[PROP_VALUE_MAX] = {0};
-   __system_property_get("ro.vendor.arm.gralloc.no_afbc_usage_flags", buf);
-   no_afbc_bits = mali_wsi_no_afbc_usage(buf, &no_afbc_fallback);
-   if (no_afbc_fallback)
+   bool fallback;
+   __system_property_get("ro.vendor.arm.gralloc.no_afbc_usage_flags", no_afbc_property);
+   mali_wsi_no_afbc_usage(no_afbc_property, &fallback);
+   if (fallback)
       mesa_logw("malisx2: ro.vendor.arm.gralloc.no_afbc_usage_flags is not readable or "
-                "not a usable value (\"%s\")", buf);
+                "not a usable value (\"%s\")", no_afbc_property);
 }
 
-/* The gralloc usage bits that keep gralloc from choosing AFBC; see
- * mali_wsi_no_afbc_usage. Without a usable property, arch 11 keeps the
- * bit earlier releases used there (MediaTek's gralloc, the G615 devices
- * this driver has shipped on); other GPUs ask for linear buffers by CPU
- * read, which any Arm gralloc honours. */
-static uint64_t
-no_afbc_usage(unsigned arch)
+uint64_t
+mali_wsi_swapchain_no_afbc(unsigned arch)
 {
    util_call_once(&no_afbc_once, no_afbc_usage_init);
-   if (no_afbc_fallback && arch == 11)
-      return 0x0200000000000000ull;
-   return no_afbc_bits;
+   return mali_wsi_arch_no_afbc_usage(arch, no_afbc_property);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -146,7 +138,7 @@ mali_GetSwapchainGrallocUsage2ANDROID(VkDevice _device, VkFormat format,
       return wsi_errorf(dev, VK_ERROR_FORMAT_NOT_SUPPORTED,
                        "shared presentable images are not supported");
    return mali_wsi_gralloc_usage(mali_device_physical(dev), format, imageUsage,
-                                 no_afbc_usage(mali_device_physical(dev)->arch),
+                                 mali_wsi_swapchain_no_afbc(mali_device_physical(dev)->arch),
                                  grallocConsumerUsage,
                                  grallocProducerUsage);
 }

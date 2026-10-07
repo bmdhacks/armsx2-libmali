@@ -48,6 +48,22 @@ struct mali_queue;
 uint64_t mali_wsi_no_afbc_usage(const char *property_value, bool *fallback);
 
 /*
+ * mali_wsi_no_afbc_usage for a GPU of this arch. Without a usable property,
+ * arch 11 keeps the bit earlier releases used there (MediaTek's gralloc,
+ * the G615 devices this driver has shipped on); other GPUs ask for linear
+ * buffers by CPU read, which any Arm gralloc honours.
+ */
+uint64_t mali_wsi_arch_no_afbc_usage(unsigned arch, const char *property_value);
+
+/*
+ * The no-AFBC usage bits swapchain buffers get on this system: on Android
+ * from ro.vendor.arm.gralloc.no_afbc_usage_flags, read once
+ * (mali_android.c); elsewhere there is no property service, so the answer
+ * for an unreadable property.
+ */
+uint64_t mali_wsi_swapchain_no_afbc(unsigned arch);
+
+/*
  * The gralloc usage for swapchain images of this format and image usage
  * (vkGetSwapchainGrallocUsage2ANDROID semantics). As the blob: GPU texture
  * as consumer usage and GPU render target as producer usage whatever the
@@ -59,6 +75,21 @@ uint64_t mali_wsi_no_afbc_usage(const char *property_value, bool *fallback);
 VkResult mali_wsi_gralloc_usage(struct mali_physical_device *pdev, VkFormat format,
                                 VkImageUsageFlags usage, uint64_t no_afbc,
                                 uint64_t *consumer, uint64_t *producer);
+
+/*
+ * The answer to vkGetPhysicalDeviceImageFormatProperties2 with the
+ * Android-hardware-buffer handle type: the gralloc usage for a buffer
+ * behind an image of this description. Android's loader asks this, before
+ * or instead of vkGetSwapchainGrallocUsage2ANDROID, for the usage of every
+ * swapchain buffer it allocates; the buffers then come back to the driver
+ * as VkNativeBufferANDROID. So the answer is what
+ * vkGetSwapchainGrallocUsage2ANDROID gives for the same format and usage,
+ * consumer and producer usage combined, no-AFBC bits included. Only what
+ * a swapchain image can be is supported: 2D, optimal tiling, no create
+ * flags but the two a mutable-format swapchain adds.
+ */
+VkResult mali_wsi_ahb_usage(struct mali_physical_device *pdev,
+                            const VkPhysicalDeviceImageFormatInfo2 *info, uint64_t *usage);
 
 /*
  * Give a swapchain image the memory of a gralloc buffer: a linear layout

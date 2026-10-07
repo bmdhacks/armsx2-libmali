@@ -76,6 +76,22 @@ mali_wsi_no_afbc_usage(const char *property_value, bool *fallback)
    return value ? value : MALI_GRALLOC_USAGE_CPU_READ_RARELY;
 }
 
+uint64_t
+mali_wsi_arch_no_afbc_usage(unsigned arch, const char *property_value)
+{
+   bool fallback;
+   const uint64_t bits = mali_wsi_no_afbc_usage(property_value, &fallback);
+   return fallback && arch == 11 ? 0x0200000000000000ull : bits;
+}
+
+#ifndef VK_USE_PLATFORM_ANDROID_KHR
+uint64_t
+mali_wsi_swapchain_no_afbc(unsigned arch)
+{
+   return mali_wsi_arch_no_afbc_usage(arch, NULL);
+}
+#endif
+
 VkResult
 mali_wsi_gralloc_usage(struct mali_physical_device *pdev, VkFormat format,
                        VkImageUsageFlags usage, uint64_t no_afbc,
@@ -119,6 +135,31 @@ mali_wsi_gralloc_usage(struct mali_physical_device *pdev, VkFormat format,
 
    *consumer = MALI_GRALLOC_USAGE_HW_TEXTURE;
    *producer = MALI_GRALLOC_USAGE_HW_RENDER | no_afbc;
+   return VK_SUCCESS;
+}
+
+VkResult
+mali_wsi_ahb_usage(struct mali_physical_device *pdev, const VkPhysicalDeviceImageFormatInfo2 *info,
+                   uint64_t *usage)
+{
+   const VkImageCreateFlags mutable_format =
+      VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+   if (info->type != VK_IMAGE_TYPE_2D || info->tiling != VK_IMAGE_TILING_OPTIMAL ||
+       (info->flags & ~mutable_format))
+      return wsi_errorf(pdev, VK_ERROR_FORMAT_NOT_SUPPORTED,
+                       "hardware-buffer images of type %d, tiling %d, flags 0x%x are not "
+                       "supported", info->type, info->tiling, info->flags);
+
+   uint64_t consumer, producer;
+   VkResult result = mali_wsi_gralloc_usage(pdev, info->format, info->usage,
+                                            mali_wsi_swapchain_no_afbc(pdev->arch), &consumer,
+                                            &producer);
+   if (result != VK_SUCCESS)
+      return result;
+   /* The loader merges the two halves of vkGetSwapchainGrallocUsage2ANDROID
+    * the same way; its gralloc1 conversion changes only the CPU_*_OFTEN
+    * bits, which are not among these. */
+   *usage = consumer | producer;
    return VK_SUCCESS;
 }
 

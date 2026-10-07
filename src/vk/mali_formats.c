@@ -15,16 +15,20 @@
  * differs and the blob's is the safer one we follow it: integer formats
  * get no blend or linear-filter bit, and combined depth/stencil formats
  * have no linear-tiling features. YCbCr formats, sparse images, protected images
- * and external memory are not supported.
+ * and external memory are not supported, except that the Android loader's
+ * question about swapchain buffers (the hardware-buffer handle type) is
+ * answered.
  */
 
 #include "mali_vk.h"
 #include "mali_image.h"
+#include "mali_wsi.h"
 
 #include "util/format/u_format.h"
 #include "util/log.h"
 #include "vk_format.h"
 #include "vk_util.h"
+#include "vulkan/vulkan_android.h"
 
 unsigned
 mali_format_planes(VkFormat format, enum pipe_format planes[MALI_IMAGE_MAX_PLANES])
@@ -201,25 +205,52 @@ mali_GetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice physicalDevice,
    VK_FROM_HANDLE(mali_physical_device, pdev, physicalDevice);
 
    /*
-    * Seam for the Android WSI: external memory (the loader's AHB queries)
-    * is not supported yet, so an image that asks for a handle type is not
-    * supported.
+    * The only external handle type is Android's hardware buffer, and only
+    * for what the Android loader asks before it allocates swapchain
+    * buffers: their gralloc usage (mali_wsi_ahb_usage). The image itself
+    * is created with a VkNativeBufferANDROID, not by importing the
+    * hardware buffer, so nothing is importable or exportable. Such an
+    * image has one level and one layer (mali_wsi_image_bind_buffer).
     */
    const VkPhysicalDeviceExternalImageFormatInfo *ext_info =
       vk_find_struct_const(pInfo->pNext, PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
-   VkResult result = ext_info && ext_info->handleType ?
-                        VK_ERROR_FORMAT_NOT_SUPPORTED :
-                        image_format_properties(pdev, pInfo, &pProps->imageFormatProperties);
+   const VkExternalMemoryHandleTypeFlagBits handle_type = ext_info ? ext_info->handleType : 0;
+   const bool ahb =
+      handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
+   uint64_t ahb_usage = 0;
+   VkResult result;
+   if (ahb) {
+      result = mali_wsi_ahb_usage(pdev, pInfo, &ahb_usage);
+      if (result == VK_SUCCESS)
+         result = image_format_properties(pdev, pInfo, &pProps->imageFormatProperties);
+   } else if (handle_type) {
+      result = VK_ERROR_FORMAT_NOT_SUPPORTED;
+   } else {
+      result = image_format_properties(pdev, pInfo, &pProps->imageFormatProperties);
+   }
    if (result != VK_SUCCESS) {
       pProps->imageFormatProperties = (VkImageFormatProperties){0};
       return result;
+   }
+   if (ahb) {
+      VkImageFormatProperties *p = &pProps->imageFormatProperties;
+      p->maxMipLevels = 1;
+      p->maxArrayLayers = 1;
+      p->sampleCounts = VK_SAMPLE_COUNT_1_BIT;
    }
 
    vk_foreach_struct(stype, ext, pProps->pNext) {
       switch (stype) {
       case VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES: {
          VkExternalImageFormatProperties *e = ext;
-         e->externalMemoryProperties = (VkExternalMemoryProperties){0};
+         e->externalMemoryProperties = (VkExternalMemoryProperties){
+            .compatibleHandleTypes = handle_type,
+         };
+         break;
+      }
+      case VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_USAGE_ANDROID: {
+         VkAndroidHardwareBufferUsageANDROID *u = ext;
+         u->androidHardwareBufferUsage = ahb_usage;
          break;
       }
       case VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_IMAGE_FORMAT_PROPERTIES: {
