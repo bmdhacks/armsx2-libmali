@@ -134,8 +134,8 @@ afbc_hw_mode(enum mali_afbc_mode m)
    case MALI_AFBC_R10G10B10A2: return MALI_AFBC_COMPRESSION_MODE_R10G10B10A2;
    case MALI_AFBC_R11G11B10: return MALI_AFBC_COMPRESSION_MODE_R11G11B10;
 #if PAN_ARCH >= 10
-   /* v9 has no 16-bit-channel AFBC modes; images there are never AFBC
-    * (mali_image.c). */
+   /* v9 has no 16-bit-channel AFBC modes; mali_image.c never makes such
+    * an image AFBC there. */
    case MALI_AFBC_R16: return MALI_AFBC_COMPRESSION_MODE_R16;
    case MALI_AFBC_R16G16: return MALI_AFBC_COMPRESSION_MODE_R16G16;
    case MALI_AFBC_R16G16B16A16: return MALI_AFBC_COMPRESSION_MODE_R16G16B16A16;

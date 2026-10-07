@@ -34,7 +34,8 @@
  *  - no storage (shader image stores cannot write AFBC), no host transfer;
  *  - no mutable or block-compatible formats and no aliasing: views keep
  *    the plane's compression mode;
- *  - every plane's format has an AFBC mode (not R32 formats, for one);
+ *  - every plane's format has an AFBC mode on this arch (not R32 formats,
+ *    for one; v9 has no 16-bit-channel modes);
  *  - large enough for a header tile (panvk's threshold; smaller images
  *    gain little).
  *
@@ -42,14 +43,29 @@
  * texture unit and the tile buffer (mali_cmd_image.c), never through the
  * raw compute copy. panvk makes the same choices (panvk_image_can_use_mod,
  * pan_mod_afbc_test_props).
+ *
+ * Both arches. On a G57 at 2x upscaling, uncompressed render targets made
+ * fragment-bound dumps 20-25 % slower than with AFBC.
  */
+static bool
+afbc_mode_on_arch(enum mali_afbc_mode mode, unsigned arch)
+{
+   switch (mode) {
+   case MALI_AFBC_NONE:
+      return false;
+   case MALI_AFBC_R16:
+   case MALI_AFBC_R16G16:
+   case MALI_AFBC_R16G16B16A16:
+      /* The 16-bit-channel compression modes start at v10. */
+      return arch >= 10;
+   default:
+      return true;
+   }
+}
+
 static bool
 can_use_afbc(const struct mali_image *image, const enum pipe_format *formats, unsigned arch)
 {
-   /* Off on v9 until it is measured on a G57; v9 also lacks the
-    * 16-bit-channel AFBC modes. */
-   if (arch == 9)
-      return false;
    const VkImageUsageFlags usage = image->vk.usage | image->vk.stencil_usage;
    if (!(usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)))
@@ -67,7 +83,7 @@ can_use_afbc(const struct mali_image *image, const enum pipe_format *formats, un
       return false;
    for (unsigned p = 0; p < image->plane_count; p++) {
       const unsigned min = mali_afbc_min_extent(formats[p]);
-      if (mali_afbc_mode(formats[p]) == MALI_AFBC_NONE ||
+      if (!afbc_mode_on_arch(mali_afbc_mode(formats[p]), arch) ||
           image->vk.extent.width < min || image->vk.extent.height < min)
          return false;
    }
